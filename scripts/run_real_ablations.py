@@ -279,6 +279,13 @@ def run_option(
         },
         metrics={"option": option, "train_loss": train_loss_sum / max(train_loss_tokens, 1), "val_loss": val_loss},
     )
+    # The optimizer is essential for preemption during a candidate, but not
+    # for a completed architecture comparison.  Keep the model/RNG/metrics
+    # state for continuation and reclaim the large Muon momentum snapshot so
+    # four candidate finals fit on the local Windows volumes.
+    optimizer_snapshot = final_checkpoint / "optimizer.pt"
+    if optimizer_snapshot.exists():
+        optimizer_snapshot.unlink()
     result = {
         "option_index": option_index,
         **option,
@@ -303,6 +310,7 @@ def run_option(
         "muon_matrix_parameters": getattr(optimizer, "matrix_parameter_count", None),
         "minimal_adamw_vector_parameters": getattr(optimizer, "vector_parameter_count", None),
         "checkpoint": str(final_checkpoint),
+        "optimizer_snapshot_retained": False,
         "load_info": load_info.__dict__,
     }
     del optimizer, model
