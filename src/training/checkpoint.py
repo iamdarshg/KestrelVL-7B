@@ -28,10 +28,18 @@ def restore_rng_state(state: dict[str, Any]) -> None:
 
 
 class CheckpointManager:
-    def __init__(self, directory: str | Path, interval_steps: int = 100) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        interval_steps: int = 100,
+        max_checkpoints: int | None = None,
+    ) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.interval_steps = interval_steps
+        self.max_checkpoints = max_checkpoints
+        if max_checkpoints is not None and max_checkpoints < 1:
+            raise ValueError("max_checkpoints must be positive or None")
         self.stop_requested = False
         signal.signal(signal.SIGTERM, self._signal)
         if hasattr(signal, "SIGBREAK"):
@@ -67,6 +75,16 @@ class CheckpointManager:
             target.rmdir()
         os.replace(temporary, target)
         (self.directory / "latest").write_text(target.name, encoding="utf-8")
+        if self.max_checkpoints is not None:
+            checkpoints = sorted(
+                (path for path in self.directory.glob("step_*" ) if path.is_dir()),
+                key=lambda path: path.name,
+            )
+            for stale in checkpoints[:-self.max_checkpoints]:
+                for child in stale.iterdir():
+                    if child.is_file():
+                        child.unlink()
+                stale.rmdir()
         return target
 
     def latest(self) -> Path | None:

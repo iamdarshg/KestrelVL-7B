@@ -154,13 +154,34 @@ def run_option(
         device=device,
         load_in_4bit=True,
         compute_dtype=torch.float16,
+        skip_svd_initialization=bool(
+            args.init_cache
+            and option_index in (1, 3)
+            and Path(args.init_cache).exists()
+        ),
     )
+    if args.init_cache and option_index in (1, 3) and Path(args.init_cache).exists():
+        cached_state = torch.load(args.init_cache, map_location="cpu", weights_only=False)
+        model.load_trainable_state_dict(cached_state)
+        del cached_state
+        print(f"reused SVD initialization for {option['name']} from {args.init_cache}", flush=True)
+    elif args.init_cache and option_index == 0 and not Path(args.init_cache).exists():
+        Path(args.init_cache).parent.mkdir(parents=True, exist_ok=True)
+        torch.save(model.trainable_state_dict(), args.init_cache)
+        print(f"saved reusable SVD initialization to {args.init_cache}", flush=True)
     model.enable_gradient_checkpointing(args.gradient_checkpointing)
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)
-    candidate_root = ROOT / args.checkpoint_root / f"{option_index:02d}_{option['name']}"
-    manager = CheckpointManager(candidate_root, interval_steps=args.checkpoint_interval)
+    checkpoint_root = Path(args.checkpoint_root)
+    if not checkpoint_root.is_absolute():
+        checkpoint_root = ROOT / checkpoint_root
+    candidate_root = checkpoint_root / f"{option_index:02d}_{option['name']}"
+    manager = CheckpointManager(
+        candidate_root,
+        interval_steps=args.checkpoint_interval,
+        max_checkpoints=args.max_checkpoints,
+    )
     optimizer = build_muon_optimizer(
         model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, weight_decay=args.weight_decay
     )
@@ -304,8 +325,19 @@ def main() -> None:
     parser.add_argument("--adamw-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--checkpoint-interval", type=int, default=1000)
+    parser.add_argument(
+        "--max-checkpoints",
+        type=int,
+        default=1,
+        help="retain only the newest atomic checkpoint per candidate on the local disk",
+    )
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint-root", default="checkpoints/real_ablations")
+    parser.add_argument(
+        "--init-cache",
+        default=None,
+        help="optional CPU state cache; candidates 2 and 4 reuse candidate 1 SVD factors",
+    )
     parser.add_argument("--output", default="reports/ablations/real_ablation_results.json")
     parser.add_argument(
         "--local-gpu-hourly-cost",
