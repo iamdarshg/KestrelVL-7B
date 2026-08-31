@@ -98,6 +98,26 @@ def config_for(option: dict[str, object]) -> KestrelConfig:
     )
 
 
+def validate_local_model_files(model_id: str) -> None:
+    """Refuse to spend GPU time against an incomplete local checkpoint."""
+    model_dir = Path(model_id)
+    if not model_dir.is_dir():
+        return
+    index_path = model_dir / "model.safetensors.index.json"
+    if not index_path.exists():
+        raise FileNotFoundError(f"local model is missing {index_path}")
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    expected = sorted(set(index.get("weight_map", {}).values()))
+    missing = [name for name in expected if not (model_dir / name).exists()]
+    partial = [name for name in expected if (model_dir / f"{name}.part").exists()]
+    undersized = [name for name in expected if (model_dir / name).stat().st_size < 1_000_000_000]
+    if missing or partial or undersized:
+        raise RuntimeError(
+            f"local Nemotron checkpoint is incomplete; missing={missing}, "
+            f"partial={partial}, undersized={undersized}"
+        )
+
+
 @torch.no_grad()
 def evaluate(model: torch.nn.Module, corpus: CompositionLockedCorpus, start: int, token_budget: int, sequence_length: int, device: torch.device) -> tuple[float, int]:
     model.eval()
@@ -299,6 +319,7 @@ def main() -> None:
     if args.model_id is None:
         local_model = ROOT / "data/raw/nemotron"
         args.model_id = str(local_model) if (local_model / "model.safetensors.index.json").exists() else "nvidia/OpenReasoning-Nemotron-7B"
+    validate_local_model_files(args.model_id)
     if args.total_tokens < len(OPTIONS) * 4:
         raise ValueError("total token budget is too small for four candidates")
     spec = CorpusSpec.from_yaml(ROOT / args.corpus_config)
@@ -314,7 +335,10 @@ def main() -> None:
     # than the tokenizer.json shipped by Nemotron.  The slow Qwen tokenizer
     # uses the same immutable vocab/merges and avoids parser-version drift.
     tokenizer = AutoTokenizer.from_pretrained(
-        args.model_id, revision=args.revision, use_fast=False
+        args.model_id,
+        revision=args.revision,
+        use_fast=False,
+        local_files_only=Path(args.model_id).is_dir(),
     )
     results: list[dict[str, object]] = []
     for index, option in enumerate(OPTIONS):
