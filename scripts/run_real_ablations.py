@@ -14,6 +14,7 @@ import gc
 import json
 import math
 import random
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -286,6 +287,16 @@ def run_option(
     optimizer_snapshot = final_checkpoint / "optimizer.pt"
     if optimizer_snapshot.exists():
         optimizer_snapshot.unlink()
+    if args.final_archive_root:
+        archive_root = Path(args.final_archive_root)
+        if not archive_root.is_absolute():
+            archive_root = ROOT / archive_root
+        archive_path = archive_root / f"{option_index:02d}_{option['name']}"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        if archive_path.exists():
+            raise FileExistsError(f"refusing to overwrite archived candidate {archive_path}")
+        shutil.move(str(final_checkpoint), str(archive_path))
+        final_checkpoint = archive_path
     result = {
         "option_index": option_index,
         **option,
@@ -341,6 +352,11 @@ def main() -> None:
     )
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint-root", default="checkpoints/real_ablations")
+    parser.add_argument(
+        "--final-archive-root",
+        default=None,
+        help="optional second-volume archive for stripped model-only completed candidates",
+    )
     parser.add_argument(
         "--init-cache",
         default=None,
