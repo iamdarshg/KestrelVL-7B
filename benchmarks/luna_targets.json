@@ -1,0 +1,20 @@
+{
+  "model": "GPT-5.6 Luna",
+  "variant": "public values retrieved 2026-08-31; max reasoning where the source specifies it",
+  "source": "https://openai.com/index/gpt-5-6/",
+  "retrieved_at": "2026-08-31",
+  "targets": {
+    "artificial_analysis_coding_agent_index_v1_1": {"value": 74.6, "unit": "index", "higher_is_better": true},
+    "swe_bench_pro": {"value": 62.7, "unit": "percent", "higher_is_better": true},
+    "deepswe_v1_1": {"value": 67.2, "unit": "percent", "higher_is_better": true},
+    "terminal_bench_2_1": {"value": 84.7, "unit": "percent", "higher_is_better": true},
+    "osworld_2_0": {"value": 45.6, "unit": "percent", "higher_is_better": true},
+    "browsecomp": {"value": 83.3, "unit": "percent", "higher_is_better": true},
+    "benchcad": {"value": 63.1, "unit": "percent", "higher_is_better": true},
+    "benchcad_python_tool": {"value": 73.9, "unit": "percent", "higher_is_better": true},
+    "gpqa_diamond": {"value": 92.3, "unit": "percent", "higher_is_better": true},
+    "mmmu_pro_no_tools": {"value": 78.4, "unit": "percent", "higher_is_better": true},
+    "toolathlon": {"value": 53.4, "unit": "percent", "higher_is_better": true}
+  },
+  "policy": "Never lower these values when the student fails. Missing or inaccessible evaluations remain unverified."
+}

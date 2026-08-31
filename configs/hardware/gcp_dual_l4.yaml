@@ -1,0 +1,17 @@
+name: gcp_dual_l4
+machine_type: g2-standard-24
+accelerator: nvidia-l4
+accelerator_count: 2
+distributed: data_parallel
+per_device_micro_batch_size: 1
+gradient_accumulation_steps: 32
+precision: bfloat16
+quantization: nf4
+sequence_length: 8192
+gradient_checkpointing: true
+spot: true
+max_budget_usd: 90
+estimated_spot_usd_per_node_hour: 1.20
+checkpoint_interval_steps: 100
+durable_checkpoint_uri: null
+

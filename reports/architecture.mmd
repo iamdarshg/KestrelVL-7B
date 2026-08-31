@@ -1,0 +1,12 @@
+flowchart LR
+  T[Text tokens] --> E[Nemotron/Qwen embeddings]
+  I[IDE / terminal screenshot] --> V[InternViT 300M dynamic 448px tiles]
+  V --> P[Adaptive projector + token budget]
+  P --> E
+  E --> L0[Layers 0-1 sliding causal attention]
+  L0 --> LC[Layers 2+ CSA/HCA alternating]
+  LC --> C[Shared K=V, compression, partial RoPE, sinks]
+  C --> X[Lightning Indexer top-k]
+  X --> O[Grouped low-rank output + mHC]
+  O --> H[LM head]
+

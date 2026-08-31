@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kestrel-vl-7b"
+version = "0.1.0"
+description = "Reference-first multimodal coding/reasoning model with bounded-memory V4-Flash-inspired attention"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "torch>=2.2",
+  "transformers>=4.47",
+  "safetensors>=0.4",
+  "pyyaml>=6.0",
+  "pillow>=10.0",
+  "numpy>=1.26",
+  "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+data = ["datasets>=2.20", "pyarrow>=16.0", "datasketch>=1.6", "sqlalchemy>=2.0"]
+train = ["accelerate>=0.34", "peft>=0.12", "bitsandbytes>=0.43", "trl>=0.10"]
+eval = ["evaluate>=0.4", "scikit-learn>=1.4"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+kestrel = "model.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

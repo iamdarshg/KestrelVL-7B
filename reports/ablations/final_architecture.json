@@ -1,0 +1,21 @@
+{
+  "source": "local_ablation_results.json",
+  "selection_policy": "lowest finite post-fit distillation proxy loss, then throughput, then peak VRAM",
+  "selected": {
+    "kv_heads": 2,
+    "hca_ratio": 128,
+    "index_topk": 64,
+    "effective_csa_topk": 64,
+    "mhc_enabled": false,
+    "steps": 2,
+    "loss_initial": 0.6715761423110962,
+    "loss_final": 0.6337299346923828,
+    "loss_delta": 0.03784620761871338,
+    "cache_max_abs_error": 3.5762786865234375e-07,
+    "elapsed_seconds": 0.6959133000000293,
+    "tokens_per_second": 2942.8953290588265,
+    "peak_vram_gib": 0.121795654296875,
+    "parameters": 171636,
+    "status": "pass"
+  }
+}

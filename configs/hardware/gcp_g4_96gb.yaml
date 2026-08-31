@@ -1,0 +1,14 @@
+name: gcp_g4_96gb
+machine_type: g4-standard-48
+accelerator: rtx-pro-6000
+accelerator_count: 1
+memory_gib: 96
+distributed: single_gpu
+per_device_micro_batch_size: 1
+precision: bfloat16
+sequence_length: 131072
+gradient_checkpointing: true
+spot: true
+max_budget_usd: 90
+estimated_spot_usd_per_node_hour: 3.60
+

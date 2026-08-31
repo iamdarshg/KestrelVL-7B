@@ -1,0 +1,22 @@
+name: local_4060_8gb
+device: cuda
+devices: 1
+per_device_micro_batch_size: 1
+gradient_accumulation_steps: 16
+precision: float16
+quantization: nf4
+language_weights: frozen
+vision_weights: nf4
+trainable_subsets: [new_attention, projector, lora, mhc]
+sequence_length: 2048
+target_sequence_length: 4096
+gradient_checkpointing: true
+cpu_optimizer_offload: true
+pin_memory: true
+prefetch_factor: 2
+max_vram_gib: 7.5
+fail_on_vram_overage: true
+checkpoint_interval_steps: 25
+checkpoint_dir: checkpoints
+gcp_budget_usd: 0
+

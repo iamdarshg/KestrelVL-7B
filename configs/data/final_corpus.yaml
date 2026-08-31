@@ -1,0 +1,22 @@
+name: kestrel-final-cpt-v1
+description: >-
+  Composition-locked generic code/reasoning CPT mixture. Ablation variants
+  consume this exact mixture; the selected checkpoint continues on it.
+total_ablation_token_budget: 10000000
+validation_token_budget: 1000000
+seed: 20260831
+sequence_length: 1024
+source_block_tokens: 256
+sources:
+  stack-edu: 0.35
+  refinecode: 0.25
+  stack-v2: 0.20
+  docs: 0.10
+  history: 0.10
+transforms:
+  fim_rate: 0.35
+governance:
+  require_provenance: true
+  exclude_contaminated: true
+  exclude_near_duplicates: true
+  benchmark_test_sets_are_held_out: true

@@ -1,0 +1,19 @@
+KestrelVL-7B source code is Copyright (C) 2026 iamdarshg and is licensed under
+the GNU Affero General Public License, version 3 or later.
+
+This repository contains configuration references and integration hooks for
+third-party models and datasets. Those artifacts remain under their own terms:
+
+- nvidia/OpenReasoning-Nemotron-7B: NVIDIA model card/license terms apply to
+  weights and derived weights.
+- OpenGVLab/InternViT-300M-448px-V2_5: the upstream model card/license terms
+  apply to weights and derived weights.
+- DeepSeek-V4-Flash-Base: its upstream model card/license terms apply to the
+  reference architecture and any weights.
+- Training datasets, benchmark datasets, and screenshot/handwriting sources
+  must be used only under their respective licenses and access conditions.
+
+The local files in `references/` are configuration snapshots, not copies of
+third-party weights. Before redistribution, audit every dataset and model
+artifact and preserve its required notices.
+
