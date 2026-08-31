@@ -27,6 +27,7 @@ FINAL_SOURCE_WEIGHTS: tuple[tuple[str, float], ...] = (
     ("docs", 0.10),
     ("history", 0.10),
 )
+SYNTHETIC_GENERATOR_VERSION = "generic-code-v2"
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,7 @@ class CorpusSpec:
             "sequence_length": self.sequence_length,
             "source_block_tokens": self.source_block_tokens,
             "fim_rate": self.fim_rate,
+            "generator_version": SYNTHETIC_GENERATOR_VERSION,
             "sources": dict(self.source_weights),
         }
 
@@ -117,26 +119,52 @@ class CompositionLockedCorpus:
         self._source_ids = {source: index + 1 for index, (source, _) in enumerate(spec.source_weights)}
         self._source_tokens = self._build_source_tokens(tokenizer)
 
-    def _build_source_tokens(self, tokenizer: object | None) -> dict[str, torch.Tensor] | None:
+    def _build_source_tokens(self, tokenizer: object | None) -> dict[str, tuple[torch.Tensor, ...]] | None:
         if tokenizer is None:
             return None
         templates = {
-            "stack-edu": "# educational implementation\ndef solve(problem):\n    \"\"\"Explain the invariant, handle edge cases, and return a result.\"\"\"\n    return problem\n",
-            "refinecode": "def parse_config(text):\n    lines = [line.strip() for line in text.splitlines() if line.strip()]\n    return {key: value for key, value in (line.split('=', 1) for line in lines)}\n",
-            "stack-v2": "class RepositoryService:\n    def __init__(self, client):\n        self.client = client\n\n    def fetch(self, identifier):\n        return self.client.get(identifier)\n",
-            "docs": "## API contract\nCall the parser before validation. Return a structured error with the file, line, and remediation.\n",
-            "history": "diff --git a/module.py b/module.py\n@@\n-    return old_value\n+    return new_value\n# tests: pytest -q\n",
+            "stack-edu": lambda variant: (
+                f"# educational implementation {variant}\n"
+                f"def solve_{variant}(problem, limit={variant % 17 + 1}):\n"
+                "    \"\"\"Explain the invariant, handle edge cases, and return a result.\"\"\"\n"
+                "    if problem is None:\n        return None\n"
+                "    return problem[:limit]\n"
+            ),
+            "refinecode": lambda variant: (
+                f"def parse_config_{variant}(text, strict={variant % 2 == 0}):\n"
+                "    lines = [line.strip() for line in text.splitlines() if line.strip()]\n"
+                "    pairs = (line.split('=', 1) for line in lines if '=' in line)\n"
+                "    return {key: value for key, value in pairs}\n"
+            ),
+            "stack-v2": lambda variant: (
+                f"class RepositoryService{variant}:\n"
+                "    def __init__(self, client):\n        self.client = client\n\n"
+                "    def fetch(self, identifier):\n        return self.client.get(identifier)\n"
+            ),
+            "docs": lambda variant: (
+                f"## API contract {variant}\n"
+                "Call the parser before validation. Return a structured error with the file, line, and remediation.\n"
+                "Example: parse_config(text) -> {\"ok\": true, \"errors\": []}\n"
+            ),
+            "history": lambda variant: (
+                f"diff --git a/module_{variant}.py b/module_{variant}.py\n@@\n"
+                "-    return old_value\n+    return new_value\n# tests: pytest -q\n"
+            ),
         }
-        result: dict[str, torch.Tensor] = {}
         encode = getattr(tokenizer, "encode", None)
         if encode is None:
             raise TypeError("tokenizer must expose encode(text, add_special_tokens=...)")
+        varied: dict[str, tuple[torch.Tensor, ...]] = {}
         for source, _ in self.spec.source_weights:
-            ids = encode(templates.get(source, templates["docs"]), add_special_tokens=False)
-            if not ids:
+            make_text = templates.get(source, templates["docs"])
+            streams = tuple(
+                torch.tensor(encode(make_text(variant), add_special_tokens=False), dtype=torch.long)
+                for variant in range(64)
+            )
+            if any(stream.numel() == 0 for stream in streams):
                 raise ValueError(f"tokenizer produced no tokens for {source}")
-            result[source] = torch.tensor(ids, dtype=torch.long)
-        return result
+            varied[source] = streams
+        return varied
 
     def source_at(self, token_index: int, validation: bool = False) -> str:
         # A validation phase uses a disjoint cycle rotation and seed domain but
@@ -162,7 +190,9 @@ class CompositionLockedCorpus:
             for local_index in range(count):
                 absolute = start + local_index
                 source = self.source_at(absolute, validation)
-                stream = self._source_tokens[source]
+                streams = self._source_tokens[source]
+                variant = (absolute // self.spec.source_block_tokens) % len(streams)
+                stream = streams[variant]
                 phase = (absolute // self.spec.source_block_tokens) * 17 + absolute
                 output[local_index] = stream[phase % stream.numel()]
             return output
