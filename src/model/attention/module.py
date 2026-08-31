@@ -35,6 +35,12 @@ class V4FlashAttention(nn.Module):
         self.rope = PartialRotaryEmbedding(
             config.rotary_dim, config.rope_theta, config.max_position_embeddings, config.yarn_factor
         )
+        self.compress_rope = PartialRotaryEmbedding(
+            config.rotary_dim,
+            config.compress_rope_theta,
+            config.max_position_embeddings,
+            config.yarn_factor,
+        )
         self.csa = None
         if self.mode == "csa":
             self.csa = CompressedSparseAttention(
@@ -72,23 +78,28 @@ class V4FlashAttention(nn.Module):
         q = self.q_b(self.q_norm(self.q_a(x))).view(x.shape[0], x.shape[1], self.config.num_attention_heads, self.config.head_dim).transpose(1, 2)
         kv = self.kv(x).view(x.shape[0], x.shape[1], 2, self.config.num_key_value_heads, self.config.head_dim)
         k, v = kv[:, :, 0].transpose(1, 2), kv[:, :, 1].transpose(1, 2)
-        q = self.rope.apply(q, positions)
-        k = self.rope.apply(k, positions)
+        raw_q = q
+        raw_k = k
+        q = self.rope.apply(raw_q, positions)
+        k = self.rope.apply(raw_k, positions)
+        compressed_q = self.compress_rope.apply(raw_q, positions)
+        compressed_k = self.compress_rope.apply(raw_k, positions)
         if cache is not None:
-            cache.update(self.layer_idx, k, v, positions)
+            cache.update(self.layer_idx, k, v, positions, compressed_key=compressed_k)
             item = cache.get(self.layer_idx)
             assert item.key is not None and item.value is not None and item.positions is not None
             key, value, key_positions = item.key, item.value, item.positions
+            compressed_key = item.compressed_key if item.compressed_key is not None else key
         else:
             key, value, key_positions = k, v, positions
+            compressed_key = compressed_k
         qpos = positions
         key_for_local = key.repeat_interleave(self.config.num_attention_heads // self.config.num_key_value_heads, dim=1)
         value_for_local = value.repeat_interleave(self.config.num_attention_heads // self.config.num_key_value_heads, dim=1)
         local = sliding_causal_attention(q, key_for_local, value_for_local, qpos, key_positions, self.config.sliding_window)
         if self.csa is not None:
-            compressed = self.csa(q, key, value, qpos, key_positions)
+            compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)
             branch = local + torch.sigmoid(self.compressed_gate) * compressed
         else:
             branch = local
         return self.out(branch.transpose(1, 2)), branch
-

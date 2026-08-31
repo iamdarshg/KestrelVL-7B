@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -63,6 +64,22 @@ OPTIONS: tuple[dict[str, object], ...] = (
 )
 
 
+def loss_for_batch(model: torch.nn.Module, inputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """Score the already-shifted corpus batch without dropping another token.
+
+    ``CompositionLockedCorpus.batch`` returns input/target pairs with equal
+    length.  The real model's public ``labels=`` API follows Transformers'
+    same-length convention and shifts internally, so using it here would
+    shift twice.  The ablation runner therefore computes CE directly and
+    counts every target token in the fixed budget.
+    """
+    output = model(inputs)
+    return F.cross_entropy(
+        output.logits.float().reshape(-1, output.logits.shape[-1]),
+        labels.reshape(-1),
+    )
+
+
 def seed_all(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -91,10 +108,10 @@ def evaluate(model: torch.nn.Module, corpus: CompositionLockedCorpus, start: int
     ):
         del cursor
         inputs, labels = inputs.to(device), labels.to(device)
-        output = model(inputs, labels=labels)
-        count = labels.numel() - 1
-        total_loss += float(output.loss.detach().cpu()) * max(count, 1)
-        total_tokens += max(count, 1)
+        loss = loss_for_batch(model, inputs, labels)
+        count = labels.numel()
+        total_loss += float(loss.detach().cpu()) * count
+        total_tokens += count
     if total_tokens == 0:
         raise RuntimeError("validation produced no complete sequence")
     return total_loss / total_tokens, total_tokens
@@ -118,6 +135,9 @@ def run_option(
         load_in_4bit=True,
         compute_dtype=torch.float16,
     )
+    model.enable_gradient_checkpointing(args.gradient_checkpointing)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)
     candidate_root = ROOT / args.checkpoint_root / f"{option_index:02d}_{option['name']}"
     manager = CheckpointManager(candidate_root, interval_steps=args.checkpoint_interval)
@@ -158,17 +178,17 @@ def run_option(
                 break
             inputs, labels = corpus.batch(token_cursor, length, validation=False)
             inputs, labels = inputs.to(device), labels.to(device)
-            output = model(inputs, labels=labels)
-            if output.loss is None or not torch.isfinite(output.loss):
+            loss = loss_for_batch(model, inputs, labels)
+            if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss in {option['name']} at step {step}")
             optimizer.zero_grad(set_to_none=True)
-            output.loss.backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(
                 [parameter for parameter in model.parameters() if parameter.requires_grad], 1.0
             )
             optimizer.step()
-            count = max(labels.numel() - 1, 1)
-            train_loss_sum += float(output.loss.detach().cpu()) * count
+            count = labels.numel()
+            train_loss_sum += float(loss.detach().cpu()) * count
             train_loss_tokens += count
             token_cursor += length
             step += 1
@@ -232,6 +252,10 @@ def run_option(
         "validation_perplexity": math.exp(min(val_loss, 20.0)),
         "train_seconds": train_seconds,
         "train_tokens_per_second": token_cursor / max(train_seconds, 1e-9),
+        "gpu_hours": train_seconds / 3600.0 if device.type == "cuda" else 0.0,
+        "estimated_cost_usd": (train_seconds / 3600.0) * args.local_gpu_hourly_cost
+        if device.type == "cuda"
+        else 0.0,
         "peak_vram_gib": peak_vram,
         "parameter_count": model.parameter_count(),
         "trainable_parameter_count": model.parameter_count(trainable_only=True),
@@ -249,7 +273,7 @@ def run_option(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-id", default="nvidia/OpenReasoning-Nemotron-7B")
+    parser.add_argument("--model-id", default=None)
     parser.add_argument("--revision")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--corpus-config", default="configs/data/final_corpus.yaml")
@@ -260,11 +284,21 @@ def main() -> None:
     parser.add_argument("--adamw-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--checkpoint-interval", type=int, default=1000)
+    parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--checkpoint-root", default="checkpoints/real_ablations")
     parser.add_argument("--output", default="reports/ablations/real_ablation_results.json")
+    parser.add_argument(
+        "--local-gpu-hourly-cost",
+        type=float,
+        default=0.0,
+        help="Optional accounting rate; local ablation defaults to zero cash cost.",
+    )
     parser.add_argument("--seed", type=int, default=20260831)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
+    if args.model_id is None:
+        local_model = ROOT / "data/raw/nemotron"
+        args.model_id = str(local_model) if (local_model / "model.safetensors.index.json").exists() else "nvidia/OpenReasoning-Nemotron-7B"
     if args.total_tokens < len(OPTIONS) * 4:
         raise ValueError("total token budget is too small for four candidates")
     spec = CorpusSpec.from_yaml(ROOT / args.corpus_config)

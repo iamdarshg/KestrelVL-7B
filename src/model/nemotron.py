@@ -15,6 +15,7 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.utils.checkpoint import checkpoint
 
 from .attention.cache import KestrelCache
 from .attention.mhc import ManifoldHyperConnection
@@ -27,7 +28,9 @@ from .transplant.svd_init import initialize_attention_from_dense
 def _materialize_linear_weight(module: nn.Module, dtype: torch.dtype) -> torch.Tensor:
     """Return a dense temporary copy, including a bitsandbytes 4-bit layer."""
     weight = module.weight
-    quant_state = getattr(weight, "quant_state", None)
+    # bitsandbytes has exposed quant_state on Params4bit and, in some
+    # Transformers/bitsandbytes combinations, on the owning module instead.
+    quant_state = getattr(weight, "quant_state", None) or getattr(module, "quant_state", None)
     if quant_state is not None:
         from bitsandbytes.functional import dequantize_4bit
 
@@ -87,6 +90,11 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         self.lm_head = lm_head
         self.base_model_id = base_model_id
         self.base_revision = base_revision
+        self.gradient_checkpointing = False
+
+    def enable_gradient_checkpointing(self, enabled: bool = True) -> None:
+        """Checkpoint decoder-layer activations for the 8 GiB local profile."""
+        self.gradient_checkpointing = enabled
 
     def freeze_backbone(self) -> None:
         for parameter in self.parameters():
@@ -136,7 +144,14 @@ class RealNemotronKestrelForCausalLM(nn.Module):
             position_ids = position_ids.expand(x.shape[0], -1)
         branch = None
         for layer in self.layers:
-            x, branch = layer(x, position_ids, past_key_values)
+            if self.training and self.gradient_checkpointing and past_key_values is None:
+                x, branch = checkpoint(
+                    lambda hidden, current_layer=layer: current_layer(hidden, position_ids, None),
+                    x,
+                    use_reentrant=False,
+                )
+            else:
+                x, branch = layer(x, position_ids, past_key_values)
         logits = self.lm_head(self.norm(x))
         loss = None
         if labels is not None:
@@ -181,10 +196,11 @@ def load_real_nemotron_transplant(
     if load_in_4bit and target.type != "cuda":
         raise ValueError("4-bit bitsandbytes loading is only supported on CUDA")
     kwargs: dict[str, Any] = {
-        "revision": revision,
         "torch_dtype": compute_dtype,
         "low_cpu_mem_usage": True,
     }
+    if revision is not None:
+        kwargs["revision"] = revision
     if load_in_4bit:
         kwargs["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True,

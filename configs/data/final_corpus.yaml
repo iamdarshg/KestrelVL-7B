@@ -3,7 +3,7 @@ description: >-
   Composition-locked generic code/reasoning CPT mixture. Ablation variants
   consume this exact mixture; the selected checkpoint continues on it.
 total_ablation_token_budget: 10000000
-validation_token_budget: 1000000
+validation_token_budget: 100000
 seed: 20260831
 sequence_length: 1024
 source_block_tokens: 256
