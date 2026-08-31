@@ -65,6 +65,24 @@ OPTIONS: tuple[dict[str, object], ...] = (
 )
 
 
+def retain_only_best_archive(results: list[dict[str, object]], archive_root: str | None) -> None:
+    """Keep the current best model-only final when local disk is constrained."""
+    if not archive_root or not results:
+        return
+    root = Path(archive_root).resolve()
+    best_index = min(range(len(results)), key=lambda idx: float(results[idx]["validation_loss"]))
+    for idx, result in enumerate(results):
+        if idx == best_index or not result.get("checkpoint"):
+            continue
+        candidate = Path(str(result["checkpoint"]))
+        if candidate.resolve().parent != root or not candidate.is_dir():
+            raise RuntimeError(f"refusing to prune checkpoint outside archive root: {candidate}")
+        shutil.rmtree(candidate)
+        result["checkpoint"] = None
+        result["checkpoint_retained"] = False
+    results[best_index]["checkpoint_retained"] = True
+
+
 def loss_for_batch(model: torch.nn.Module, inputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """Score the already-shifted corpus batch without dropping another token.
 
@@ -401,6 +419,7 @@ def main() -> None:
         print(f"[{index + 1}/{len(OPTIONS)}] {option['name']}: {option}", flush=True)
         result = run_option(args, index, option, spec, tokenizer, device)
         results.append(result)
+        retain_only_best_archive(results, args.final_archive_root)
         print(json.dumps(result, sort_keys=True, default=str), flush=True)
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output).write_text(
