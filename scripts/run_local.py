@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import torch
 
 from model import KestrelConfig, KestrelForCausalLM
-from release.serialization import load_q4_bundle
+from release.runtime import load_q4_runtime
 from safetensors.torch import load_file
 
 
@@ -32,6 +32,7 @@ def main() -> None:
     args = parser.parse_args()
     use_vision = bool(args.image)
     state = None
+    q4_root: Path | None = None
     model_note = "bootstrap smoke path uses untrained tiny weights"
     if args.model_path:
         root = Path(args.model_path)
@@ -42,8 +43,8 @@ def main() -> None:
         fields = {field.name for field in dataclasses.fields(KestrelConfig)}
         config = KestrelConfig(**{key: value for key, value in raw_config.items() if key in fields})
         if (root / "quantization_config.json").exists():
-            state = load_q4_bundle(root, device="cpu")
-            model_note = "loaded pickle-free Kestrel Q4 bundle; runtime dequantizes bootstrap tensors"
+            q4_root = root
+            model_note = "loaded pickle-free packed Q4 bundle; runtime dequantizes one active linear at a time"
         elif (root / "model.safetensors").exists():
             state = load_file(str(root / "model.safetensors"), device="cpu")
             model_note = "loaded safetensors Kestrel state"
@@ -53,7 +54,9 @@ def main() -> None:
         config = KestrelConfig.tiny(use_vision=use_vision)
     device = torch.device(args.device)
     model = KestrelForCausalLM(config)
-    if state is not None:
+    if q4_root is not None:
+        load_q4_runtime(model, q4_root, device=device)
+    elif state is not None:
         missing, unexpected = model.load_state_dict(state, strict=False)
         if missing or unexpected:
             raise SystemExit(f"state/config mismatch: missing={missing[:5]} unexpected={unexpected[:5]}")

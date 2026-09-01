@@ -8,6 +8,7 @@ from model.attention.lightning_indexer import LightningIndexer
 from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
 from model.attention.sliding import sliding_causal_attention
+from release.runtime import Q4Linear, load_q4_runtime
 from release.serialization import load_q4_bundle, save_q4_bundle
 from training.long_context import LongContextConfig, run_chunked_forward
 
@@ -208,6 +209,24 @@ def test_q4_bundle_is_pickle_free_and_round_trips(tmp_path) -> None:
     assert restored["norm.weight"].dtype == torch.bfloat16
     assert restored["layer.weight"].shape == state["layer.weight"].shape
     assert torch.allclose(restored["layer.weight"].float(), state["layer.weight"], atol=0.3)
+
+
+def test_q4_runtime_keeps_linear_weights_packed(tmp_path) -> None:
+    torch.manual_seed(161)
+    config = KestrelConfig.tiny(use_vision=False, num_hidden_layers=2, layer_schedule=["sliding", "csa"])
+    source = KestrelForCausalLM(config).eval()
+    release = save_q4_bundle(source.state_dict(), tmp_path / "q4", config.to_dict())
+
+    restored = KestrelForCausalLM(config).eval()
+    load_q4_runtime(restored, release, device="cpu")
+    quantized_linears = [module for module in restored.modules() if isinstance(module, Q4Linear)]
+    assert quantized_linears
+    assert all(module.packed_weight.dtype == torch.uint8 for module in quantized_linears)
+    ids = torch.randint(0, config.vocab_size, (1, 9))
+    with torch.inference_mode():
+        output = restored(ids).logits
+    assert output.shape == (1, 9, config.vocab_size)
+    assert torch.isfinite(output).all()
 
 
 def test_vision_policy_offloads_and_caches_encoded_tokens() -> None:

@@ -168,9 +168,13 @@ python scripts/export_release.py `
 ```
 
 The exporter writes groupwise Q4 tensors, native-precision sensitive tensors,
-checksums, configuration, and a clean-process load validation. `load_q4_bundle`
-is intentionally separate from a future fused 4060 runtime so dequantization
-cannot be mistaken for measured Q4 deployment.
+checksums, configuration, and a clean-process load validation. The local
+loader uses `load_q4_runtime`: packed linear weights stay packed on the target
+device and only the active linear is dequantized for its GEMM. This is a
+reference memory-bounded runtime; a fused CUDA dequantize-GEMM kernel is still
+needed before claiming production throughput or a measured 4060 VRAM gate.
+`load_q4_bundle` remains available as an explicit dense/dequantized inspection
+utility and should not be used for full-model deployment.
 
 ## References and honest evidence boundary
 
