@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Any
+from contextlib import nullcontext
 
 import torch
 from torch import nn
@@ -65,6 +66,7 @@ class InternViTEncoder(nn.Module):
                 raise RuntimeError(f"could not load InternViT at {model_path}: {exc}") from exc
         else:
             self.model = TinyVisionEncoder(hidden_size)
+        self.last_telemetry: dict[str, object] = {}
         if freeze:
             for parameter in self.parameters():
                 parameter.requires_grad_(False)
@@ -79,3 +81,33 @@ class InternViTEncoder(nn.Module):
             return output.hidden_states[-1]
         raise TypeError("vision encoder output has no token sequence")
 
+    def encode_with_policy(
+        self,
+        pixel_values: torch.Tensor,
+        language_device: torch.device,
+        offload_to_cpu: bool = False,
+    ) -> torch.Tensor:
+        """Encode once, optionally keeping the frozen ViT on CPU.
+
+        The returned sequence is placed on ``language_device`` exactly once;
+        callers should project it there and reuse the projected tokens across
+        all text chunks.  This avoids a per-chunk GPU/CPU shuttle for long
+        multimodal prompts.
+        """
+        vision_device = torch.device("cpu") if offload_to_cpu else language_device
+        if next(self.parameters(), torch.empty(0)).device != vision_device:
+            self.to(vision_device)
+        requires_grad = any(parameter.requires_grad for parameter in self.parameters())
+        context = nullcontext() if requires_grad else torch.no_grad()
+        with context:
+            encoded = self(pixel_values.to(vision_device, non_blocking=True))
+        encoded = encoded.to(language_device, non_blocking=True)
+        self.last_telemetry = {
+            "vision_device": str(vision_device),
+            "language_device": str(language_device),
+            "offloaded": offload_to_cpu,
+            "encoded_once": True,
+            "tiles": int(pixel_values.shape[0]),
+            "tokens": int(encoded.shape[-2]),
+        }
+        return encoded

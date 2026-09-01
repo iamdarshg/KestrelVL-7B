@@ -1,6 +1,7 @@
 """Compact HF-friendly model shell used for smoke tests and later transplant."""
 
 import math
+import hashlib
 from dataclasses import dataclass
 
 import torch
@@ -62,19 +63,85 @@ class KestrelForCausalLM(nn.Module):
         self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=False)
         self.vision_encoder = vision or (InternViTEncoder(hidden_size=self.config.vision_hidden_size) if self.config.use_vision else None)
         self.vision_projector = AdaptiveVisionProjector(self.config.vision_hidden_size, self.config.hidden_size, self.config.vision_token_budget) if self.config.use_vision else None
+        self._vision_encoded_cache: dict[str, torch.Tensor] = {}
+        self.last_vision_telemetry: dict[str, object] = {}
 
-    def visual_tokens(self, pixel_values: torch.Tensor, budget: int | None = None) -> torch.Tensor:
+    def _default_vision_budget(self, tile_count: int, kind: str) -> int:
+        named = {
+            "ordinary": self.config.vision_budget_ordinary,
+            "document": self.config.vision_budget_document,
+            "ide": self.config.vision_budget_ide,
+            "high_resolution": self.config.vision_budget_high_resolution,
+        }
+        if kind in named:
+            return named[kind]
+        if tile_count >= 8:
+            return self.config.vision_budget_high_resolution
+        if tile_count >= 4:
+            return self.config.vision_budget_ide
+        if tile_count >= 2:
+            return self.config.vision_budget_document
+        return self.config.vision_budget_ordinary
+
+    def visual_tokens(
+        self,
+        pixel_values: torch.Tensor,
+        budget: int | None = None,
+        context_length: int = 0,
+        kind: str = "auto",
+    ) -> torch.Tensor:
         if self.vision_encoder is None or self.vision_projector is None:
             raise RuntimeError("vision is disabled")
         if pixel_values.ndim == 3:
-            pixel_values = dynamic_tiles(pixel_values).to(next(self.parameters()).device)
+            pixel_values = dynamic_tiles(pixel_values)
         if pixel_values.ndim == 4 and pixel_values.shape[0] > 1:
             pixels = pixel_values
         else:
             pixels = pixel_values.reshape(-1, *pixel_values.shape[-3:])
-        encoded = self.vision_encoder(pixels)
+        language_device = self.embed_tokens.weight.device
+        offload = bool(
+            context_length > self.config.vision_offload_threshold
+            and self.config.vision_freeze_long_context
+            and not any(parameter.requires_grad for parameter in self.vision_encoder.parameters())
+        )
+        cacheable = self.config.vision_cache_encoded and not any(
+            parameter.requires_grad for parameter in self.vision_encoder.parameters()
+        )
+        cache_key = hashlib.sha256(
+            pixels.detach().to(device="cpu").contiguous().numpy().tobytes()
+        ).hexdigest()
+        cache_hit = False
+        if cacheable and cache_key in self._vision_encoded_cache:
+            encoded = self._vision_encoded_cache[cache_key].to(language_device, non_blocking=True)
+            cache_hit = True
+            self.last_vision_telemetry = {
+                "vision_device": "cached_cpu",
+                "language_device": str(language_device),
+                "offloaded": offload,
+                "encoded_once": False,
+                "cache_hit": True,
+                "tiles": int(pixels.shape[0]),
+                "tokens": int(encoded.shape[-2]),
+            }
+        elif hasattr(self.vision_encoder, "encode_with_policy"):
+            encoded = self.vision_encoder.encode_with_policy(pixels, language_device, offload_to_cpu=offload)  # type: ignore[attr-defined]
+            self.last_vision_telemetry = dict(getattr(self.vision_encoder, "last_telemetry", {}))
+        else:
+            encoded = self.vision_encoder(pixels.to(language_device))
+            self.last_vision_telemetry = {
+                "vision_device": str(language_device),
+                "language_device": str(language_device),
+                "offloaded": False,
+                "encoded_once": True,
+                "tiles": int(pixels.shape[0]),
+                "tokens": int(encoded.shape[-2]),
+            }
+        if cacheable and not cache_hit:
+            self._vision_encoded_cache[cache_key] = encoded.detach().to(device="cpu")
+        self.last_vision_telemetry["cache_hit"] = cache_hit
+        self.last_vision_telemetry["budget"] = budget or self._default_vision_budget(int(pixels.shape[0]), kind)
         encoded = encoded.reshape(1, -1, encoded.shape[-1])
-        return self.vision_projector(encoded, budget)
+        return self.vision_projector(encoded, self.last_vision_telemetry["budget"])  # type: ignore[arg-type]
 
     def forward(
         self,
@@ -91,7 +158,7 @@ class KestrelForCausalLM(nn.Module):
         if pixel_values is not None:
             if past_key_values is not None:
                 raise ValueError("pixel_values may only be supplied during prefill")
-            visual = self.visual_tokens(pixel_values)
+            visual = self.visual_tokens(pixel_values, context_length=int(input_ids.shape[1]))
             x = torch.cat((visual, x), dim=1)
             prefix = visual.shape[1]
             if labels is not None:

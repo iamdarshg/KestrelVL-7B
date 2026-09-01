@@ -50,6 +50,7 @@ class V4FlashAttention(nn.Module):
                 config.csa_compression_ratio,
                 config.index_head_dim,
                 config.index_topk,
+                config.candidate_chunk_size,
             )
         elif self.mode == "hca":
             self.csa = HeavilyCompressedAttention(
@@ -59,6 +60,7 @@ class V4FlashAttention(nn.Module):
                 config.hca_compression_ratio,
                 config.index_head_dim,
                 config.index_topk,
+                config.candidate_chunk_size,
             )
         # Reconstruction must begin exactly on the local branch.  A centered
         # sigmoid gives coefficient sigmoid(0)-0.5 == 0 while retaining a
@@ -94,11 +96,59 @@ class V4FlashAttention(nn.Module):
         compressed_q = self.compress_rope.apply(raw_q, positions)
         compressed_k = self.compress_rope.apply(raw_k, positions)
         if cache is not None:
-            cache.update(self.layer_idx, k, v, positions, compressed_key=compressed_k)
             item = cache.get(self.layer_idx)
-            assert item.key is not None and item.value is not None and item.positions is not None
-            key, value, key_positions = item.key, item.value, item.positions
-            compressed_key = item.compressed_key if item.compressed_key is not None else key
+            if item.key is None:
+                key, value, key_positions = k, v, positions
+            else:
+                # ``item.key`` is bounded to the local attention window, so
+                # this temporary never scales with total context length.
+                key = torch.cat((item.key, k), dim=2)
+                value = torch.cat((item.value, v), dim=2)  # type: ignore[arg-type]
+                key_positions = torch.cat((item.positions, positions), dim=1)  # type: ignore[arg-type]
+
+            compressed_chunks: list[torch.Tensor] = []
+            compressed_value_chunks: list[torch.Tensor] = []
+            compressed_position_chunks: list[torch.Tensor] = []
+            if self.csa is not None:
+                # Join only the incomplete current compression group with the
+                # new token chunk.  Complete historical groups stay in the
+                # append-only cache and are never concatenated here.
+                pending_key = item.pending_key
+                pending_value = item.pending_value
+                pending_positions = item.pending_positions
+                if pending_key is not None:
+                    stream_key = torch.cat((pending_key, compressed_k), dim=2)
+                    stream_value = torch.cat((pending_value, v), dim=2)  # type: ignore[arg-type]
+                    stream_positions = torch.cat((pending_positions, positions), dim=1)  # type: ignore[arg-type]
+                else:
+                    stream_key, stream_value, stream_positions = compressed_k, v, positions
+                new_key, new_value, new_positions, consumed = self.csa.compressor.forward_with_positions(
+                    stream_key, stream_positions, value=stream_value
+                )
+                item.pending_key = stream_key[:, :, consumed:]
+                item.pending_value = stream_value[:, :, consumed:]
+                item.pending_positions = stream_positions[:, consumed:]
+                cache.update(
+                    self.layer_idx,
+                    k,
+                    v,
+                    positions,
+                    compressed_key=new_key,
+                    compressed_value=new_value,
+                    compressed_positions=new_positions,
+                    local_window=self.config.sliding_window,
+                )
+                compressed_chunks = list(item.compressed.key_chunks)
+                compressed_value_chunks = list(item.compressed.value_chunks)
+                compressed_position_chunks = list(item.compressed.position_chunks)
+            else:
+                cache.update(
+                    self.layer_idx,
+                    k,
+                    v,
+                    positions,
+                    local_window=self.config.sliding_window,
+                )
         else:
             key, value, key_positions = k, v, positions
             compressed_key = compressed_k
@@ -111,7 +161,17 @@ class V4FlashAttention(nn.Module):
             if abs(float(gate.detach())) < 1e-8:
                 branch = local
             else:
-                compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)
+                if cache is not None:
+                    compressed = self.csa.forward_from_compressed(
+                        compressed_q,
+                        compressed_chunks,
+                        compressed_value_chunks,
+                        compressed_position_chunks,
+                        qpos,
+                        query_block=self.config.attention_query_block,
+                    )
+                else:
+                    compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)
                 branch = local + gate * compressed
         else:
             branch = local

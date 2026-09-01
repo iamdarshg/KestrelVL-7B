@@ -3,8 +3,36 @@ device: cuda
 devices: 1
 per_device_micro_batch_size: 1
 gradient_accumulation_steps: 16
-precision: float16
+precision: bfloat16
 quantization: nf4
+forward_weight_storage: q4
+compute_dtype: float16
+master_weight_dtype: bfloat16
+gradient_dtype: bfloat16
+allow_fp32_master: false
+optimizer: muon
+muon_momentum_dtype: bfloat16
+adamw_fallback: small_vectors_only
+attention:
+  sliding_window: 128
+  csa_compression_ratio: 4
+  hca_compression_ratio: 128
+  index_topk: 256
+  index_dtype: int8
+  compressed_kv_dtype: bfloat16
+  index_head_dim: 64
+  candidate_chunk_size: 64
+  retrieval_chunk_size: 512
+  block_size: 512
+vision:
+  offload_threshold_tokens: 262144
+  cache_encoded: true
+  freeze_long_context: true
+  budgets: {ordinary: 512, document: 1024, ide: 2048, high_resolution: 4096}
+long_context_training:
+  mode: full_recompute
+  execution_chunk_tokens: 8192
+  detach_interval_tokens: 8192
 language_weights: frozen
 vision_weights: nf4
 trainable_subsets: [new_attention, projector, lora, mhc]
@@ -19,4 +47,3 @@ fail_on_vram_overage: true
 checkpoint_interval_steps: 25
 checkpoint_dir: checkpoints
 gcp_budget_usd: 0
-

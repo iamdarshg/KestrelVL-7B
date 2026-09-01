@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import torch
 
 from model import KestrelConfig, KestrelForCausalLM
-from training.checkpoint import CheckpointManager
+from training.checkpoint import SafeCheckpointManager
 
 STAGES = ["original_teacher", "attention_initialized", "attention_reconstructed", "hidden_state_recovered", "vision_projector", "vision_adapted", "cpt", "sft", "preference", "grpo_code", "grpo_swe", "grpo_terminal", "grpo_vision", "grpo_long", "opd", "final_grpo", "context_extended", "qat", "q4_release"]
 
@@ -40,7 +40,7 @@ def main() -> None:
             raise SystemExit(f"refusing {args.stage}: missing {gate}; complete measured recovery first")
     config = KestrelConfig.tiny(use_vision=False)
     model = KestrelForCausalLM(config)
-    manager = CheckpointManager(ROOT / args.output_root / f"{STAGES.index(args.stage):02d}_{args.stage}", interval_steps=25)
+    manager = SafeCheckpointManager(ROOT / args.output_root / f"{STAGES.index(args.stage):02d}_{args.stage}", interval_steps=25)
     if args.resume:
         manager.load(args.resume, model)
     ids = torch.randint(0, config.vocab_size, (1, 8))
@@ -52,4 +52,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

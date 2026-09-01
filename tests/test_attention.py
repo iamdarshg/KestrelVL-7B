@@ -8,6 +8,8 @@ from model.attention.lightning_indexer import LightningIndexer
 from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
 from model.attention.sliding import sliding_causal_attention
+from release.serialization import load_q4_bundle, save_q4_bundle
+from training.long_context import LongContextConfig, run_chunked_forward
 
 
 def positions(length: int) -> torch.Tensor:
@@ -118,3 +120,108 @@ def test_gradient_finite() -> None:
     loss.backward()
     gradients = [p.grad for p in model.parameters() if p.grad is not None]
     assert gradients and all(torch.isfinite(g).all() for g in gradients)
+
+
+def test_cache_keeps_bounded_local_state_and_chunked_compressed_state() -> None:
+    torch.manual_seed(12)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=4)
+    model = KestrelForCausalLM(config).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 40))
+    cache = KestrelCache()
+    with torch.no_grad():
+        model(ids, past_key_values=cache)
+    assert cache.length() == 40
+    assert cache.get(0).key is not None and cache.get(0).key.shape[2] == 4
+    assert cache.get(2).compressed_token_count == 10
+    assert cache.get(3).compressed_token_count == 5
+    assert len(cache.get(2).compressed.key_chunks) == 1
+
+    restored = KestrelCache.from_state_dict(cache.state_dict())
+    assert restored.length() == 40
+    assert restored.get(0).key is not None and restored.get(0).key.shape[2] == 4
+    assert restored.get(2).compressed_token_count == 10
+
+
+def test_chunked_indexer_matches_eager_topk() -> None:
+    torch.manual_seed(13)
+    indexer = LightningIndexer(8, 2, 4, topk=4, candidate_chunk_size=2)
+    query = torch.randn(1, 2, 5, 8)
+    key = torch.randn(1, 7, 8)
+    qpos, kpos = positions(5), positions(7)
+    eager = indexer(query, key, qpos, kpos)
+    chunked = indexer.forward_chunked(
+        query,
+        [key[:, :3], key[:, 3:]],
+        qpos,
+        [kpos[:, :3], kpos[:, 3:]],
+        query_block=2,
+    )
+    assert torch.equal(eager[0], chunked[0])
+    assert torch.allclose(eager[1], chunked[1], atol=1e-6)
+    assert torch.equal(eager[2], chunked[2])
+
+
+def test_chunked_csa_matches_single_compressed_chunk() -> None:
+    torch.manual_seed(14)
+    module = CompressedSparseAttention(2, 1, 8, ratio=2, index_dim=4, topk=4, candidate_chunk_size=2)
+    query = torch.randn(1, 2, 8, 8)
+    key = torch.randn(1, 1, 8, 8)
+    value = torch.randn(1, 1, 8, 8)
+    ck, cv, cp, _ = module.compressor.forward_with_positions(key, positions(8), value=value)
+    eager = module.forward_from_compressed(query, [ck], [cv], [cp], positions(8))
+    split = module.forward_from_compressed(
+        query,
+        [ck[:, :, :2], ck[:, :, 2:]],
+        [cv[:, :, :2], cv[:, :, 2:]],
+        [cp[:, :2], cp[:, 2:]],
+        positions(8),
+    )
+    assert torch.allclose(eager, split, atol=1e-6, rtol=1e-6)
+
+
+def test_long_context_chunked_forward_does_not_need_full_logit_buffer() -> None:
+    torch.manual_seed(15)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=32)
+    model = KestrelForCausalLM(config).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 24))
+    with torch.no_grad():
+        expected = model(ids).logits
+        result = run_chunked_forward(
+            model,
+            ids,
+            config=LongContextConfig(mode="full_recompute", execution_chunk_tokens=5, max_context_tokens=64),
+            collect_logits=True,
+        )
+    assert result.logits is not None
+    assert torch.allclose(expected, result.logits, atol=2e-5, rtol=2e-5)
+    assert result.telemetry["full_logits_collected"] is True
+
+
+def test_q4_bundle_is_pickle_free_and_round_trips(tmp_path) -> None:
+    torch.manual_seed(16)
+    state = {
+        "layer.weight": torch.randn(3, 129, dtype=torch.float32),
+        "norm.weight": torch.randn(3, dtype=torch.bfloat16),
+    }
+    output = save_q4_bundle(state, tmp_path / "release", {"model_type": "kestrel"})
+    restored = load_q4_bundle(output)
+    assert restored["norm.weight"].dtype == torch.bfloat16
+    assert restored["layer.weight"].shape == state["layer.weight"].shape
+    assert torch.allclose(restored["layer.weight"].float(), state["layer.weight"], atol=0.3)
+
+
+def test_vision_policy_offloads_and_caches_encoded_tokens() -> None:
+    torch.manual_seed(17)
+    config = KestrelConfig.tiny(
+        use_vision=True,
+        vision_offload_threshold=0,
+        vision_budget_ordinary=4,
+    )
+    model = KestrelForCausalLM(config).eval()
+    pixels = torch.rand(3, 28, 28)
+    first = model.visual_tokens(pixels, context_length=1)
+    assert first.shape[1] == 4
+    assert model.last_vision_telemetry["offloaded"] is True
+    second = model.visual_tokens(pixels, context_length=1)
+    assert second.shape == first.shape
+    assert model.last_vision_telemetry["cache_hit"] is True

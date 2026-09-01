@@ -23,6 +23,11 @@ class KestrelConfig:
     q_lora_rank: int = 512
     index_head_dim: int = 64
     index_topk: int = 256
+    index_dtype: str = "int8"
+    candidate_chunk_size: int = 64
+    retrieval_chunk_size: int = 512
+    attention_query_block: int = 512
+    compressed_kv_dtype: str = "bfloat16"
     sliding_window: int = 128
     csa_compression_ratio: int = 4
     hca_compression_ratio: int = 128
@@ -44,6 +49,13 @@ class KestrelConfig:
     use_vision: bool = True
     vision_hidden_size: int = 1024
     vision_token_budget: int = 1024
+    vision_offload_threshold: int = 262_144
+    vision_cache_encoded: bool = True
+    vision_freeze_long_context: bool = True
+    vision_budget_ordinary: int = 512
+    vision_budget_document: int = 1024
+    vision_budget_ide: int = 2048
+    vision_budget_high_resolution: int = 4096
 
     def __post_init__(self) -> None:
         if not self.layer_schedule:
@@ -58,6 +70,10 @@ class KestrelConfig:
             raise ValueError("mhc_streams must be positive")
         if self.attention_output_scale_init < 0:
             raise ValueError("attention_output_scale_init must be non-negative")
+        if self.index_topk < 1 or self.candidate_chunk_size < 1 or self.retrieval_chunk_size < 1:
+            raise ValueError("retrieval sizes must be positive")
+        if self.index_dtype not in {"int8", "int16", "int32", "int64"}:
+            raise ValueError("index_dtype must be an explicitly supported integer dtype")
 
     @property
     def rotary_dim(self) -> int:

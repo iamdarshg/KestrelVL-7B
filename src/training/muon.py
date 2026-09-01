@@ -62,6 +62,7 @@ class Muon(Optimizer):
         ns_steps: int = 5,
         betas: tuple[float, float] = (0.9, 0.95),
         eps: float = 1e-8,
+        momentum_dtype: torch.dtype = torch.bfloat16,
     ) -> None:
         if lr <= 0 or adamw_lr <= 0:
             raise ValueError("Muon and AdamW learning rates must be positive")
@@ -73,6 +74,7 @@ class Muon(Optimizer):
             ns_steps=ns_steps,
             betas=betas,
             eps=eps,
+            momentum_dtype=momentum_dtype,
         )
         super().__init__(params, defaults)
 
@@ -95,9 +97,9 @@ class Muon(Optimizer):
                 if parameter.ndim >= 2 and use_muon:
                     momentum_buffer = state.get("momentum_buffer")
                     if momentum_buffer is None:
-                        momentum_buffer = torch.zeros_like(parameter, dtype=torch.float32)
+                        momentum_buffer = torch.zeros_like(parameter, dtype=group["momentum_dtype"])
                         state["momentum_buffer"] = momentum_buffer
-                    momentum_buffer.mul_(group["momentum"]).add_(grad.float(), alpha=1.0 - group["momentum"])
+                    momentum_buffer.mul_(group["momentum"]).add_(grad.to(momentum_buffer.dtype), alpha=1.0 - group["momentum"])
                     update = _zeropower_newton_schulz(momentum_buffer, group["ns_steps"])
                     if group["weight_decay"]:
                         parameter.mul_(1.0 - group["lr"] * group["weight_decay"])
@@ -167,10 +169,13 @@ def build_muon_optimizer(
         lr=muon_lr,
         adamw_lr=adamw_lr,
         weight_decay=weight_decay,
+        momentum_dtype=torch.bfloat16,
     )
     optimizer.matrix_parameter_count = sum(p.numel() for p in muon_matrices)  # type: ignore[attr-defined]
     optimizer.vector_parameter_count = sum(p.numel() for p in trainable if p.ndim < 2)  # type: ignore[attr-defined]
     optimizer.adamw_fallback_matrix_parameter_count = sum(  # type: ignore[attr-defined]
         p.numel() for p in adamw_parameters if p.ndim >= 2
     )
+    optimizer.muon_parameter_count = sum(p.numel() for p in muon_matrices)  # type: ignore[attr-defined]
+    optimizer.adamw_parameter_count = sum(p.numel() for p in adamw_parameters)  # type: ignore[attr-defined]
     return optimizer

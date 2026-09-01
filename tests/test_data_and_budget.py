@@ -6,6 +6,7 @@ from data.corpus import CompositionLockedCorpus, CorpusSpec
 from data.contamination import ContaminationIndex, normalize_code
 from data.fim import make_fim, should_fim
 from data.manifests import ManifestStore, SampleRecord
+from training.checkpoint import SafeCheckpointManager
 from training.muon import Muon
 
 
@@ -79,3 +80,30 @@ def test_corpus_composition_is_reproducible() -> None:
     }
     assert torch.equal(corpus_a.batch(0, 32)[0], corpus_b.batch(0, 32)[0])
     assert not torch.equal(corpus_a.batch(0, 32)[0], corpus_a.batch(0, 32, validation=True)[0])
+
+
+def test_safe_checkpoint_round_trip_has_no_pickle_files(tmp_path: Path) -> None:
+    torch.manual_seed(18)
+    model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 2))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    loss = model(torch.randn(2, 4)).square().mean()
+    loss.backward()
+    optimizer.step()
+    manager = SafeCheckpointManager(tmp_path / "resume", interval_steps=1, max_checkpoints=1)
+    checkpoint = manager.save(
+        7,
+        model,
+        optimizer,
+        dataset_state={"cursor": 123},
+        metrics={"tokens": 456},
+    )
+    assert (checkpoint / "model.safetensors").exists()
+    assert (checkpoint / "optimizer.safetensors").exists()
+    assert not list(checkpoint.glob("*.pt"))
+
+    restored_model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 2))
+    restored_optimizer = torch.optim.AdamW(restored_model.parameters(), lr=1e-3)
+    state = manager.load(checkpoint, restored_model, restored_optimizer)
+    assert state["step"] == 7
+    for left, right in zip(model.parameters(), restored_model.parameters()):
+        assert torch.equal(left, right)

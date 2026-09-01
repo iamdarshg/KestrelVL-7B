@@ -16,6 +16,14 @@ and tests. Expensive training stages are opt-in and must be backed by measured
 checkpoints and held-out evaluations. No paid GCP job is started by install or
 testing.
 
+The issue-#1 memory/release foundation is now implemented in the reference
+path: local K/V is bounded, CSA/HCA state is append-only and chunked, the
+Lightning Indexer never needs a dense `Q x M` score tensor, long-context
+execution has explicit `full_recompute` and `stateful_truncated` modes, and
+production resume/release artifacts have safetensors-only paths. A fused CUDA
+kernel, full real-Nemotron 1M forward/backward measurement, and 4060 Q4
+quality result remain validation work; the repository does not claim them.
+
 The current first gate is attention correctness and representation recovery.
 SFT/RL launchers refuse to proceed unless the recovery gate is present and
 passing. Local ablations are architecture/recovery proxies, not public
@@ -49,6 +57,10 @@ ablation artifact rather than by assertion.
 The reference path never creates a full million-token attention mask. Query
 blocks score compressed keys in bounded chunks. This proves the memory contract
 but still needs a fused kernel before claiming production 1M-token throughput.
+The cache keeps the final 128 local tokens and append-only compressed BF16
+chunks; `reports/DIMENSION_MAPPING.md` records the dimension transplant and
+the distinction between compact local candidate offsets and gather-safe
+absolute indices.
 
 ```text
 tokens ──> Qwen/Nemotron embedding ──> decoder layers ──> LM head
@@ -132,7 +144,9 @@ ablation. The original real-Nemotron screen remains available through
 `scripts/run_stage.py` implements the milestone names from the specification.
 Each run writes configuration, dataset-manifest hash, RNG state, optimizer and
 scheduler state when present, progress, hardware telemetry, and a durable-sync
-manifest. Preemptible shutdown is handled by signal/checkpoint hooks.
+manifest. Real-Nemotron runs use `SafeCheckpointManager`, which stores model,
+optimizer, and RNG tensors in safetensors and metadata in JSON. Preemptible
+shutdown is handled by signal/checkpoint hooks.
 
 ```powershell
 python scripts/run_stage.py --stage attention_initialized --config configs/hardware/local_4060_8gb.yaml
@@ -142,6 +156,21 @@ python scripts/run_stage.py --stage attention_reconstructed --resume checkpoints
 GCP launchers require `--confirm-budget` and a cap below `$100`. They use
 guest-local checkpoints first and optionally sync to a user-selected GCS URI.
 Do not put credentials in YAML or source control.
+
+To create a pickle-free release from a standard safetensors state export:
+
+```powershell
+python scripts/export_release.py `
+  --state-safetensors .\weights\model.safetensors `
+  --config-json .\weights\config.json `
+  --output .\releases\kestrel-q4 `
+  --force
+```
+
+The exporter writes groupwise Q4 tensors, native-precision sensitive tensors,
+checksums, configuration, and a clean-process load validation. `load_q4_bundle`
+is intentionally separate from a future fused 4060 runtime so dequantization
+cannot be mistaken for measured Q4 deployment.
 
 ## References and honest evidence boundary
 

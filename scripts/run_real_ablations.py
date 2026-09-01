@@ -29,8 +29,9 @@ sys.path.insert(0, str(ROOT / "src"))
 from data.corpus import CompositionLockedCorpus, CorpusSpec
 from model.configuration import KestrelConfig
 from model.nemotron import load_real_nemotron_transplant
-from training.checkpoint import CheckpointManager
+from training.checkpoint import SafeCheckpointManager
 from training.muon import build_muon_optimizer
+from training.precision import PrecisionPolicy, optimizer_telemetry, validate_precision_policy
 
 
 OPTIONS: tuple[dict[str, object], ...] = (
@@ -225,14 +226,26 @@ def run_option(
     if not checkpoint_root.is_absolute():
         checkpoint_root = ROOT / checkpoint_root
     candidate_root = checkpoint_root / f"{option_index:02d}_{option['name']}"
-    manager = CheckpointManager(
+    manager = SafeCheckpointManager(
         candidate_root,
         interval_steps=args.checkpoint_interval,
         max_checkpoints=args.max_checkpoints,
+        durable_uri=args.durable_checkpoint_uri,
     )
     optimizer = build_muon_optimizer(
         model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, weight_decay=args.weight_decay
     )
+    precision_report = validate_precision_policy(
+        model,
+        PrecisionPolicy(
+            forward_weight_storage="q4",
+            compute_dtype=compute_dtype,
+            master_weight_dtype=compute_dtype,
+            gradient_dtype=compute_dtype,
+            allow_fp32_master=False,
+        ),
+    )
+    optimizer_report = optimizer_telemetry(optimizer)
     per_candidate = args.total_tokens // len(OPTIONS)
     validation_tokens = min(args.validation_tokens, per_candidate // 4)
     train_tokens = per_candidate - validation_tokens
@@ -247,7 +260,7 @@ def run_option(
             raise RuntimeError("checkpoint corpus fingerprint does not match current final corpus")
         print(f"resumed {option['name']} at step={step} token_cursor={token_cursor}", flush=True)
     elif args.resume:
-        manager.save(
+            manager.save(
             0,
             model,
             optimizer,
@@ -291,7 +304,12 @@ def run_option(
                         "target_train_tokens": target,
                         "corpus_fingerprint": spec.fingerprint(),
                     },
-                    metrics={"option": option, "train_loss": train_loss_sum / max(train_loss_tokens, 1)},
+                    metrics={
+                        "option": option,
+                        "train_loss": train_loss_sum / max(train_loss_tokens, 1),
+                        "precision": precision_report,
+                        "optimizer": optimizer_telemetry(optimizer),
+                    },
                 )
             if manager.stop_requested:
                 manager.save(
@@ -325,15 +343,18 @@ def run_option(
             "validation_tokens": val_tokens,
             "corpus_fingerprint": spec.fingerprint(),
         },
-        metrics={"option": option, "train_loss": train_loss_sum / max(train_loss_tokens, 1), "val_loss": val_loss},
+        metrics={
+            "option": option,
+            "train_loss": train_loss_sum / max(train_loss_tokens, 1),
+            "val_loss": val_loss,
+            "precision": precision_report,
+            "optimizer": optimizer_telemetry(optimizer),
+        },
     )
     # The optimizer is essential for preemption during a candidate, but not
     # for a completed architecture comparison.  Keep the model/RNG/metrics
-    # state for continuation and reclaim the large Muon momentum snapshot so
-    # four candidate finals fit on the local Windows volumes.
-    optimizer_snapshot = final_checkpoint / "optimizer.pt"
-    if optimizer_snapshot.exists():
-        optimizer_snapshot.unlink()
+    # state for continuation.  Safe checkpoints are retained as a complete
+    # resume artifact; archive pruning is confined to the archive root.
     if args.final_archive_root:
         archive_root = Path(args.final_archive_root)
         if not archive_root.is_absolute():
@@ -371,8 +392,10 @@ def run_option(
         "compute_dtype": str(compute_dtype),
         "training_logit_stride": args.training_logit_stride,
         "checkpoint": str(final_checkpoint),
-        "optimizer_snapshot_retained": False,
+        "optimizer_snapshot_retained": True,
         "load_info": load_info.__dict__,
+        "precision": precision_report,
+        "optimizer": optimizer_report,
     }
     del optimizer, model
     gc.collect()
@@ -420,6 +443,11 @@ def main() -> None:
         help="compute training CE on every Nth target while still processing every corpus token; validation stays exact",
     )
     parser.add_argument("--checkpoint-root", default="checkpoints/real_ablations")
+    parser.add_argument(
+        "--durable-checkpoint-uri",
+        default=None,
+        help="optional gs:// URI; production checkpoints are synced with gcloud after atomic local save",
+    )
     parser.add_argument(
         "--final-archive-root",
         default=None,
