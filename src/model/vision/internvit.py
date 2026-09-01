@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from contextlib import nullcontext
 import json
+import struct
 
 import torch
 from torch import nn
@@ -56,6 +57,100 @@ def _extract_token_sequence(output: Any) -> torch.Tensor:
     raise TypeError("vision encoder output has no patch-token sequence")
 
 
+_SAFETENSORS_DTYPES: dict[str, torch.dtype] = {
+    "BOOL": torch.bool,
+    "U8": torch.uint8,
+    "I8": torch.int8,
+    "I16": torch.int16,
+    "I32": torch.int32,
+    "I64": torch.int64,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
+    "F32": torch.float32,
+    "F64": torch.float64,
+}
+
+
+def _read_safetensors_header(state_path: Path) -> tuple[dict[str, Any], int]:
+    """Read only the fixed-size safetensors header and return its data origin."""
+    with state_path.open("rb") as handle:
+        header_size_raw = handle.read(8)
+        if len(header_size_raw) != 8:
+            raise ValueError(f"safetensors file is truncated: {state_path}")
+        header_size = struct.unpack("<Q", header_size_raw)[0]
+        header_raw = handle.read(header_size)
+    if len(header_raw) != header_size:
+        raise ValueError(f"safetensors header is truncated: {state_path}")
+    header = json.loads(header_raw.decode("utf-8"))
+    if not isinstance(header, dict):
+        raise ValueError("safetensors header must be a JSON object")
+    return header, 8 + header_size
+
+
+def _copy_safetensors_streaming(model: nn.Module, state_path: Path) -> None:
+    """Copy a safetensors checkpoint into ``model`` one tensor at a time.
+
+    ``safetensors.torch.load_file`` is normally the right API, but its mmap
+    behavior can reserve a very large Windows paging-file budget.  During the
+    real 7B Nemotron graft the language model already occupies most of that
+    budget, so retain only the small JSON header and one tensor byte range at a
+    time.  This is intentionally limited to a single verified local file; the
+    normal Hugging Face loader remains the path for other checkpoints.
+    """
+    header, data_origin = _read_safetensors_header(state_path)
+    model_state = model.state_dict()
+    expected_keys = set(model_state)
+    seen_keys: set[str] = set()
+    file_size = state_path.stat().st_size
+
+    with state_path.open("rb") as handle:
+        for key, metadata in header.items():
+            if key == "__metadata__":
+                continue
+            if key not in model_state:
+                raise RuntimeError(f"unexpected tensor in vision checkpoint: {key}")
+            if not isinstance(metadata, dict):
+                raise ValueError(f"invalid metadata for safetensors tensor: {key}")
+            dtype_name = metadata.get("dtype")
+            source_dtype = _SAFETENSORS_DTYPES.get(dtype_name)
+            if source_dtype is None:
+                raise ValueError(f"unsupported safetensors dtype {dtype_name!r} for {key}")
+            shape = tuple(int(dimension) for dimension in metadata.get("shape", []))
+            offsets = metadata.get("data_offsets")
+            if not isinstance(offsets, list) or len(offsets) != 2:
+                raise ValueError(f"invalid data offsets for safetensors tensor: {key}")
+            start, end = (int(offsets[0]), int(offsets[1]))
+            absolute_start = data_origin + start
+            absolute_end = data_origin + end
+            if start < 0 or end < start or absolute_end > file_size:
+                raise ValueError(f"out-of-range data offsets for safetensors tensor: {key}")
+            expected_bytes = torch.empty(shape, dtype=source_dtype).numel() * torch.empty(
+                (), dtype=source_dtype
+            ).element_size()
+            if end - start != expected_bytes:
+                raise ValueError(
+                    f"byte count mismatch for {key}: header={end - start}, expected={expected_bytes}"
+                )
+            handle.seek(absolute_start)
+            raw = handle.read(end - start)
+            if len(raw) != end - start:
+                raise ValueError(f"truncated data for safetensors tensor: {key}")
+            source = torch.frombuffer(bytearray(raw), dtype=source_dtype).reshape(shape)
+            target = model_state[key]
+            if tuple(target.shape) != shape:
+                raise RuntimeError(
+                    f"shape mismatch for {key}: checkpoint={shape}, model={tuple(target.shape)}"
+                )
+            with torch.no_grad():
+                target.copy_(source.to(dtype=target.dtype, device=target.device))
+            seen_keys.add(key)
+            del source, raw
+
+    missing_keys = sorted(expected_keys - seen_keys)
+    if missing_keys:
+        raise RuntimeError(f"vision checkpoint is missing tensors: {missing_keys[:3]}")
+
+
 def _load_local_model_with_safetensors_fallback(
     model_path: Path,
     torch_dtype: torch.dtype | None,
@@ -69,7 +164,6 @@ def _load_local_model_with_safetensors_fallback(
     pinned config and loading the verified state dict directly preserves the
     exact weights while avoiding that loader-only incompatibility.
     """
-    from safetensors.torch import load_file
     from transformers import AutoConfig, AutoModel
 
     config = AutoConfig.from_pretrained(
@@ -80,15 +174,7 @@ def _load_local_model_with_safetensors_fallback(
         kwargs["torch_dtype"] = torch_dtype
     model = AutoModel.from_config(config, **kwargs)
     state_path = model_path / "model.safetensors"
-    state = load_file(str(state_path), device="cpu")
-    incompatible = model.load_state_dict(state, strict=False)
-    if incompatible.missing_keys or incompatible.unexpected_keys:
-        raise RuntimeError(
-            "direct vision checkpoint load had incompatible keys: "
-            f"missing={incompatible.missing_keys[:3]} "
-            f"unexpected={incompatible.unexpected_keys[:3]}"
-        )
-    del state
+    _copy_safetensors_streaming(model, state_path)
     if torch_dtype is not None:
         model = model.to(dtype=torch_dtype)
     return model
@@ -150,6 +236,13 @@ class InternViTEncoder(nn.Module):
         self.hidden_size = hidden_size
         self.backend = "tiny"
         if model_path:
+            local_path = Path(model_path)
+            local_config = local_path / "config.json"
+            is_tipsv2 = False
+            if local_path.is_dir() and local_config.exists():
+                is_tipsv2 = json.loads(local_config.read_text(encoding="utf-8")).get(
+                    "model_type"
+                ) == "tipsv2"
             try:
                 from transformers import AutoModel
 
@@ -159,29 +252,18 @@ class InternViTEncoder(nn.Module):
                 }
                 if torch_dtype is not None:
                     kwargs["torch_dtype"] = torch_dtype
-                if Path(model_path).is_dir():
+                if local_path.is_dir():
                     kwargs["local_files_only"] = True
-                try:
-                    self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
-                except AttributeError:
-                    # Transformers 5.10-dev currently assumes safetensors
-                    # metadata is non-null.  TIPSv2's file is valid but bare;
-                    # use the direct local fallback only for that loader bug.
-                    local_config = Path(model_path) / "config.json"
-                    is_tipsv2 = False
-                    if local_config.exists():
-                        is_tipsv2 = json.loads(local_config.read_text(encoding="utf-8")).get(
-                            "model_type"
-                        ) == "tipsv2"
-                    if (
-                        not is_tipsv2
-                        or not Path(model_path).is_dir()
-                        or not (Path(model_path) / "model.safetensors").exists()
-                    ):
-                        raise
+                if is_tipsv2 and (local_path / "model.safetensors").exists():
+                    # Avoid the installed Transformers loader's safetensors
+                    # metadata assumption and its eager mmap path.  This is
+                    # also materially safer when Nemotron already occupies
+                    # most of a small machine's virtual-memory budget.
                     self.model = _load_local_model_with_safetensors_fallback(
-                        Path(model_path), torch_dtype
+                        local_path, torch_dtype
                     )
+                else:
+                    self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
                 config = self.model.config
                 self.backend = str(getattr(config, "model_type", "internvit"))
                 self.hidden_size = int(

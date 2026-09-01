@@ -558,14 +558,19 @@ class RealNemotronKestrelForCausalLM(nn.Module):
             if logits_to_keep < 1:
                 raise ValueError("logits_to_keep must be positive")
             hidden_states = hidden_states[:, -logits_to_keep:]
-        logits = self.lm_head(hidden_states)
+        lm_head_device = next(self.lm_head.parameters()).device
+        logits = self.lm_head(
+            hidden_states.to(lm_head_device)
+            if hidden_states.device != lm_head_device
+            else hidden_states
+        )
         if self.debug_finite and not torch.isfinite(logits).all():
             raise FloatingPointError("non-finite LM-head logits")
         loss = None
         if labels is not None:
             loss = F.cross_entropy(
                 logits[:, :-1].float().reshape(-1, logits.shape[-1]),
-                labels[:, 1:].reshape(-1),
+                labels[:, 1:].to(logits.device).reshape(-1),
                 ignore_index=-100,
             )
         output = KestrelOutput(logits=logits, loss=loss, past_key_values=past_key_values)
@@ -590,6 +595,7 @@ class NemotronLoadInfo:
     initialization_errors: tuple[dict[str, float], ...]
     vision_loaded: bool = False
     vision_model_id: str | None = None
+    cpu_lm_head: bool = False
 
 
 def load_real_nemotron_transplant(
@@ -602,6 +608,7 @@ def load_real_nemotron_transplant(
     skip_svd_initialization: bool = False,
     vision_model_id: str | Path | None = None,
     vision_stage: str = "projector",
+    cpu_lm_head: bool = False,
 ) -> tuple[RealNemotronKestrelForCausalLM, NemotronLoadInfo]:
     """Load real Nemotron weights and construct one transplant candidate.
 
@@ -722,14 +729,24 @@ def load_real_nemotron_transplant(
             reader.cpu("model.norm.weight", dtype=compute_dtype),
             target,
         )
-        lm_head = _replace_with_4bit_linear(
-            base.lm_head,
-            reader.cpu("lm_head.weight", dtype=compute_dtype),
-            target,
-            compute_dtype,
-        )
+        lm_head_weight = reader.cpu("lm_head.weight", dtype=compute_dtype)
+        if cpu_lm_head:
+            # Smoke-only escape hatch for cards where the temporary NF4
+            # quantization workspace for the 152k-vocabulary head exceeds
+            # remaining VRAM. The forward path shuttles only the final hidden
+            # slice to this CPU head. Normal training/release keeps this off.
+            lm_head = _materialize_parameter(base.lm_head, lm_head_weight, torch.device("cpu"))
+        else:
+            lm_head = _replace_with_4bit_linear(
+                base.lm_head,
+                lm_head_weight,
+                target,
+                compute_dtype,
+            )
     else:
         embed_tokens, norm, lm_head = base.model.embed_tokens, base.model.norm, base.lm_head
+        if cpu_lm_head:
+            lm_head = lm_head.to(device="cpu")
     vision_encoder: InternViTEncoder | None = None
     vision_projector: AdaptiveVisionProjector | None = None
     if config.use_vision:
@@ -772,5 +789,6 @@ def load_real_nemotron_transplant(
         initialization_errors=tuple(errors),
         vision_loaded=vision_encoder is not None,
         vision_model_id=str(vision_model_id) if vision_model_id is not None else None,
+        cpu_lm_head=cpu_lm_head,
     )
     return model, info

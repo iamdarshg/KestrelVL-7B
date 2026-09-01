@@ -169,6 +169,38 @@ ablation. The original real-Nemotron screen remains available through
 5. Every cloud launch uses the explicit budget guard. The prototype cap is
    $90, below the requested $100 GCP credit ceiling.
 
+For a short real-model GCP throughput measurement, run the following on a
+single-L4 guest after the model artifacts are present. It uses a synthetic
+token stream, keeps the per-device microbatch at one, and writes VRAM,
+tokens/sec, GPU-hours, and estimated cost to JSON:
+
+```bash
+bash scripts/run_gcp_throughput.sh --profile configs/hardware/gcp_single_l4.yaml \
+  --world-size 1 --model-id data/raw/nemotron --steps 10 --warmup-steps 2 \
+  --gradient-accumulation-steps 1
+```
+
+The final-training target is one RTX PRO 6000. Its short comparable
+single-GPU measurement is:
+
+```bash
+bash scripts/run_gcp_throughput.sh --profile configs/hardware/gcp_final_rtx_pro_6000.yaml \
+  --world-size 1 --model-id data/raw/nemotron --steps 10 --warmup-steps 2 \
+  --gradient-accumulation-steps 1
+```
+
+The existing dual-L4 profile remains available as a scaling reference, but it
+is not part of the selected smoke/throughput plan. The final-training profile
+is single-GPU so no cross-device assumption is hidden in the results.
+
+Use `python scripts/benchmark_gcp_throughput.py --dry-run` to validate the
+resolved profile without loading weights. These measurements deliberately
+return hidden states and use a bounded proxy loss, so the large vocabulary LM
+head is excluded; they are architecture/optimizer throughput measurements,
+not language-quality or end-to-end training claims. Add
+`--vision-model-id data/raw/tipsv2-l14` for a separate multimodal prefill
+measurement after the real graft smoke passes.
+
 ## Reproducible stages
 
 `scripts/run_stage.py` implements the milestone names from the specification.

@@ -68,6 +68,16 @@ def main() -> None:
     parser.add_argument("--resume")
     parser.add_argument("--smoke-prompt")
     parser.add_argument("--smoke-image")
+    parser.add_argument(
+        "--smoke-random-image",
+        action="store_true",
+        help="use one deterministic-shape random 448px RGB tile for integration smoke",
+    )
+    parser.add_argument(
+        "--smoke-cpu-lm-head",
+        action="store_true",
+        help="smoke-only: keep the large LM head on CPU to avoid NF4 temp-workspace OOM",
+    )
     parser.add_argument("--smoke-image-kind", default="ide")
     parser.add_argument("--smoke-vision-budget", type=int)
     parser.add_argument("--debug-finite", action=argparse.BooleanOptionalAction, default=False)
@@ -75,6 +85,12 @@ def main() -> None:
 
     if args.smoke_image and args.without_vision:
         raise SystemExit("--smoke-image requires vision; remove --without-vision")
+    if args.smoke_image and args.smoke_random_image:
+        raise SystemExit("choose --smoke-image or --smoke-random-image, not both")
+    if args.smoke_random_image and args.without_vision:
+        raise SystemExit("--smoke-random-image requires vision; remove --without-vision")
+    if args.smoke_cpu_lm_head and not args.smoke_prompt:
+        raise SystemExit("--smoke-cpu-lm-head is only valid with --smoke-prompt")
     use_vision = not args.without_vision
     if use_vision and not args.vision_model_id:
         raise SystemExit(
@@ -108,6 +124,7 @@ def main() -> None:
         skip_svd_initialization=bool(args.init_cache),
         vision_model_id=args.vision_model_id if use_vision else None,
         vision_stage=args.vision_stage if use_vision else "none",
+        cpu_lm_head=args.smoke_cpu_lm_head,
     )
     if args.init_cache:
         state_path = Path(args.init_cache)
@@ -135,6 +152,7 @@ def main() -> None:
             "revision": args.revision,
             "vision_model_id": args.vision_model_id if use_vision else None,
             "vision_stage": args.vision_stage if use_vision else "none",
+            "cpu_lm_head": args.smoke_cpu_lm_head,
             "stage": args.stage,
             "protocol": {
                 "kind": "real_nemotron_graft_initialization",
@@ -161,6 +179,8 @@ def main() -> None:
         )
         ids = tokenizer(args.smoke_prompt, return_tensors="pt").input_ids.to(device)
         pixels = _pixels(args.smoke_image).to(device) if args.smoke_image else None
+        if args.smoke_random_image:
+            pixels = torch.rand(3, 448, 448, device=device, dtype=compute_dtype)
         model.eval()
         with torch.inference_mode():
             output = model(

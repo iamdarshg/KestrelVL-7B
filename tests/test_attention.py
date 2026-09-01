@@ -9,7 +9,11 @@ from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
 from model.attention.sliding import sliding_causal_attention
 from model.nemotron import RealNemotronKestrelForCausalLM
-from model.vision.internvit import InternViTEncoder, _extract_token_sequence
+from model.vision.internvit import (
+    InternViTEncoder,
+    _copy_safetensors_streaming,
+    _extract_token_sequence,
+)
 from model.vision.projector import AdaptiveVisionProjector
 from release.runtime import Q4Linear, load_q4_runtime
 from release.serialization import load_q4_bundle, save_q4_bundle
@@ -109,6 +113,19 @@ def test_partial_rope_only_changes_requested_subdimension() -> None:
     out = rope.apply(x, positions(3))
     assert out.shape == x.shape
     assert torch.equal(out[..., 4:], x[..., 4:])
+
+
+def test_streaming_safetensors_loader_reconstructs_model(tmp_path) -> None:
+    from safetensors.torch import save_file
+
+    torch.manual_seed(104)
+    source = torch.nn.Sequential(torch.nn.Linear(7, 5), torch.nn.LayerNorm(5)).eval()
+    target = torch.nn.Sequential(torch.nn.Linear(7, 5), torch.nn.LayerNorm(5)).eval()
+    path = tmp_path / "model.safetensors"
+    save_file({key: value.detach().clone() for key, value in source.state_dict().items()}, str(path))
+    _copy_safetensors_streaming(target, path)
+    for source_value, target_value in zip(source.state_dict().values(), target.state_dict().values()):
+        assert torch.equal(source_value, target_value)
 
 
 def test_mhc_is_doubly_stochastic_and_finite() -> None:

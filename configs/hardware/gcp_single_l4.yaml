@@ -1,0 +1,45 @@
+name: gcp_single_l4
+purpose: smoke_and_throughput_only
+machine_type: g2-standard-12
+accelerator: nvidia-l4
+accelerator_count: 1
+distributed: single_gpu
+per_device_micro_batch_size: 1
+gradient_accumulation_steps: 1
+precision: bfloat16
+quantization: nf4
+forward_weight_storage: q4
+compute_dtype: bfloat16
+master_weight_dtype: bfloat16
+gradient_dtype: bfloat16
+allow_fp32_master: false
+optimizer: muon
+muon_momentum_dtype: bfloat16
+adamw_fallback: small_vectors_only
+attention:
+  sliding_window: 128
+  csa_compression_ratio: 4
+  hca_compression_ratio: 128
+  index_topk: 256
+  index_dtype: int8
+  compressed_kv_dtype: bfloat16
+  index_head_dim: 64
+  candidate_chunk_size: 64
+  retrieval_chunk_size: 512
+  block_size: 512
+vision:
+  offload_threshold_tokens: 262144
+  cache_encoded: true
+  freeze_long_context: true
+  budgets: {ordinary: 512, document: 1024, ide: 2048, high_resolution: 4096}
+long_context_training:
+  mode: full_recompute
+  execution_chunk_tokens: 8192
+  detach_interval_tokens: 8192
+sequence_length: 8192
+gradient_checkpointing: true
+spot: true
+max_budget_usd: 30
+estimated_spot_usd_per_node_hour: 0.60
+checkpoint_interval_steps: 100
+durable_checkpoint_uri: null
