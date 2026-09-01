@@ -628,11 +628,34 @@ def main() -> None:
             + "\n",
             encoding="utf-8",
         )
+    output_path = ROOT / args.output if not Path(args.output).is_absolute() else Path(args.output)
     results: list[dict[str, object]] = []
+    if args.resume and output_path.exists():
+        payload = json.loads(output_path.read_text(encoding="utf-8"))
+        if payload.get("target") != "bert":
+            raise RuntimeError(f"resume report target mismatch: {payload.get('target')!r}")
+        if int(payload.get("global_token_budget", -1)) != args.total_tokens:
+            raise RuntimeError("resume report global token budget mismatch")
+        if payload.get("corpus_fingerprint") != spec.fingerprint():
+            raise RuntimeError("resume report corpus fingerprint mismatch")
+        if payload.get("target_config_sha256") != target_digest:
+            raise RuntimeError("resume report target config mismatch")
+        for prior in payload.get("results", []):
+            if not isinstance(prior, dict):
+                raise RuntimeError("resume report contains a non-object result")
+            if prior.get("target") != "bert" or prior.get("corpus_fingerprint") != spec.fingerprint():
+                raise RuntimeError("resume report contains an incompatible candidate")
+            results.append(prior)
+        if results:
+            print(f"loaded {len(results)} completed BERT candidate result(s) from {output_path}", flush=True)
     archive_root = Path(args.final_archive_root)
     if not archive_root.is_absolute():
         archive_root = ROOT / archive_root
     for index, option in enumerate(OPTIONS):
+        completed = next((prior for prior in results if prior.get("name") == option["name"]), None)
+        if completed is not None:
+            print(f"[{index + 1}/{len(OPTIONS)}] {option['name']}: completed result loaded; skipping retraining", flush=True)
+            continue
         print(f"[{index + 1}/{len(OPTIONS)}] {option['name']}: {option}", flush=True)
         result = run_option(
             args, index, option, spec, tokenizer, device, target_config, target_digest
@@ -640,7 +663,6 @@ def main() -> None:
         results.append(result)
         retain_only_best_archive(results, archive_root)
         print(json.dumps(result, sort_keys=True, default=str), flush=True)
-        output_path = ROOT / args.output if not Path(args.output).is_absolute() else Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps(

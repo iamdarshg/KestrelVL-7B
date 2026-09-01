@@ -4,6 +4,7 @@ import json
 import os
 import random
 import signal
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,15 @@ class CheckpointManager:
         signal.signal(signal.SIGTERM, self._signal)
         if hasattr(signal, "SIGBREAK"):
             signal.signal(signal.SIGBREAK, self._signal)
+        # A process can die during torch.save (including a full-disk failure)
+        # after creating a temporary checkpoint.  It is never a valid resume
+        # point because ``latest`` is advanced only after the atomic replace.
+        # Remove only those manager-owned temporary directories on startup.
+        for temporary in self.directory.glob(".step_*.tmp"):
+            if temporary.is_dir():
+                shutil.rmtree(temporary, ignore_errors=True)
+            elif temporary.exists():
+                temporary.unlink()
 
     def _signal(self, *_args: object) -> None:
         self.stop_requested = True
@@ -54,7 +64,12 @@ class CheckpointManager:
     def save(self, step: int, model: torch.nn.Module, optimizer: torch.optim.Optimizer | None = None, scheduler: Any = None, dataset_state: dict[str, Any] | None = None, metrics: dict[str, Any] | None = None) -> Path:
         target = self.directory / f"step_{step:08d}"
         temporary = self.directory / f".step_{step:08d}.tmp"
-        temporary.mkdir(exist_ok=True)
+        if temporary.exists():
+            if temporary.is_dir():
+                shutil.rmtree(temporary)
+            else:
+                temporary.unlink()
+        temporary.mkdir()
         # Real Nemotron candidates keep the frozen 4-bit backbone in the
         # immutable HF cache.  Their checkpoints contain only trainable
         # transplant parameters; tiny test models still save a normal state
@@ -62,13 +77,19 @@ class CheckpointManager:
         # of frozen weights.
         state_dict_fn = getattr(model, "trainable_state_dict", None)
         model_state = state_dict_fn() if state_dict_fn is not None else model.state_dict()
-        torch.save(model_state, temporary / "model.pt")
-        if optimizer is not None:
-            torch.save(optimizer.state_dict(), temporary / "optimizer.pt")
-        if scheduler is not None:
-            torch.save(scheduler.state_dict(), temporary / "scheduler.pt")
-        torch.save(capture_rng_state(), temporary / "rng.pt")
-        (temporary / "state.json").write_text(json.dumps({"step": step, "dataset": dataset_state or {}, "metrics": metrics or {}, "saved_at": time.time()}, indent=2, default=str), encoding="utf-8")
+        try:
+            torch.save(model_state, temporary / "model.pt")
+            if optimizer is not None:
+                torch.save(optimizer.state_dict(), temporary / "optimizer.pt")
+            if scheduler is not None:
+                torch.save(scheduler.state_dict(), temporary / "scheduler.pt")
+            torch.save(capture_rng_state(), temporary / "rng.pt")
+            (temporary / "state.json").write_text(json.dumps({"step": step, "dataset": dataset_state or {}, "metrics": metrics or {}, "saved_at": time.time()}, indent=2, default=str), encoding="utf-8")
+        except BaseException:
+            # Do not strand a partial model/optimizer snapshot after a failed
+            # write.  The previous ``latest`` checkpoint remains intact.
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
         if target.exists():
             for child in target.iterdir():
                 child.unlink()
