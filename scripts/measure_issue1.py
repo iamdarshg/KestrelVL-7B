@@ -86,6 +86,8 @@ def main() -> None:
                     "chunks": result.chunks,
                     "peak_vram_gib": peak_gib,
                     "telemetry": telemetry,
+                    "cache_memory_bytes": result.telemetry["cache_memory_bytes"],
+                    "evidence_label": result.telemetry["evidence_label"],
                     "logits_to_keep": 1,
                     "compressed_branch": args.compressed_branch,
                 }

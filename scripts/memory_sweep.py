@@ -29,7 +29,14 @@ def main() -> None:
     lengths = [int(value) for value in args.lengths.split(",") if value.strip()]
     records: list[dict[str, object]] = []
     for length in lengths:
-        record: dict[str, object] = {"length": length, "device": str(device)}
+        record: dict[str, object] = {
+            "length": length,
+            "device": str(device),
+            "run_mode": "stateful_truncated",
+            "evidence_label": "forward_only_stateful_truncated",
+            "full_gradient_claim": False,
+            "full_logits_collected": False,
+        }
         try:
             config = KestrelConfig.tiny(
                 use_vision=False,
@@ -67,6 +74,8 @@ def main() -> None:
                     "chunks": result.chunks,
                     "telemetry": telemetry,
                     "peak_vram_gib": peak_gib,
+                    "cache_memory_bytes": result.telemetry["cache_memory_bytes"],
+                    "attention_memory_contract": "bounded_reference_no_dense_TxT",
                 }
             )
             del model, ids, result

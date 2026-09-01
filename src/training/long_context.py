@@ -217,6 +217,7 @@ def run_chunked_forward(
     if total_tokens:
         result_loss = torch.tensor(total_loss_value / total_tokens, device=input_ids.device)
     result_logits = torch.cat(collected, dim=1) if collect_logits and collected else None
+    cache_memory = cache.memory_bytes()
     return ChunkedForwardResult(
         loss=result_loss,
         token_count=total_tokens,
@@ -231,5 +232,11 @@ def run_chunked_forward(
             "detach_interval_tokens": cfg.detach_interval_tokens,
             "cache_layers": len(cache.layers),
             "full_logits_collected": collect_logits,
+            "cache_memory_bytes": cache_memory,
+            "evidence_label": (
+                "full_gradient_training" if optimizer is not None and cfg.mode == "full_recompute"
+                else "stateful_truncated_training" if optimizer is not None
+                else "forward_only_stateful_truncated"
+            ),
         },
     )

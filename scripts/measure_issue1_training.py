@@ -29,7 +29,8 @@ def main() -> None:
     parser.add_argument("--mode", choices=["full_recompute", "stateful_truncated"], default="stateful_truncated")
     parser.add_argument("--chunk-size", type=int, default=8192)
     parser.add_argument("--detach-interval", type=int, default=8192)
-    parser.add_argument("--max-vram-gib", type=float, default=96.0)
+    parser.add_argument("--preferred-max-vram-gib", type=float, default=88.0)
+    parser.add_argument("--max-vram-gib", type=float, default=92.0)
     parser.add_argument("--output", default="reports/runtime/issue1_training.json")
     args = parser.parse_args()
     device = torch.device(args.device)
@@ -87,6 +88,10 @@ def main() -> None:
                     "token_count": result.token_count,
                     "peak_vram_gib": peak_gib,
                     "telemetry": telemetry,
+                    "cache_memory_bytes": result.telemetry["cache_memory_bytes"],
+                    "evidence_label": result.telemetry["evidence_label"],
+                    "full_gradient_claim": args.mode == "full_recompute",
+                    "preferred_memory_gate": peak_gib <= args.preferred_max_vram_gib,
                     "precision": precision,
                     "optimizer": optimizer_telemetry(optimizer),
                 }
