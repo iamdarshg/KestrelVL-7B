@@ -26,6 +26,35 @@ class LightningIndexer(nn.Module):
         self.key = nn.Linear(head_dim, num_heads * index_dim, bias=False)
         self.scale = index_dim ** -0.5
 
+    def project_keys(
+        self,
+        key_chunks,
+        storage_dtype: str = "bfloat16",
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor | None]]:
+        """Project and optionally quantize compressed keys for cache storage."""
+        if storage_dtype not in {"bfloat16", "int8", "int16", "int32", "int64"}:
+            raise ValueError(f"unsupported index storage dtype: {storage_dtype}")
+        projected_chunks: list[torch.Tensor] = []
+        scale_chunks: list[torch.Tensor | None] = []
+        for full_key in key_chunks:
+            if full_key.ndim != 3:
+                raise ValueError("key chunks must have shape [B, M, D]")
+            b, m, _ = full_key.shape
+            projected = self.key(full_key).view(b, m, self.num_heads, self.index_dim).permute(0, 2, 1, 3)
+            if storage_dtype == "bfloat16":
+                projected_chunks.append(projected.to(torch.bfloat16))
+                scale_chunks.append(None)
+                continue
+            dtype = getattr(torch, storage_dtype)
+            qmax = float(torch.iinfo(dtype).max)
+            scales = projected.float().abs().amax(dim=(2, 3), keepdim=True).clamp_min(1e-8) / qmax
+            quantized = (projected.float() / scales).round().clamp(
+                float(torch.iinfo(dtype).min), qmax
+            ).to(dtype)
+            projected_chunks.append(quantized)
+            scale_chunks.append(scales.to(torch.float16))
+        return projected_chunks, scale_chunks
+
     def forward(
         self,
         query: torch.Tensor,
@@ -51,6 +80,8 @@ class LightningIndexer(nn.Module):
         query_positions: torch.Tensor,
         key_position_chunks,
         query_block: int = 512,
+        projected_key_chunks=None,
+        projected_key_scales=None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Retrieve top-k compressed keys without a ``Q x M`` allocation.
 
@@ -66,6 +97,11 @@ class LightningIndexer(nn.Module):
         positions_chunks = list(key_position_chunks)
         if len(chunks) != len(positions_chunks):
             raise ValueError("key and position chunk counts must match")
+        if projected_key_chunks is not None:
+            if len(projected_key_chunks) != len(chunks):
+                raise ValueError("projected key chunk count must match key chunks")
+            if projected_key_scales is None or len(projected_key_scales) != len(chunks):
+                raise ValueError("projected key scales must match projected key chunks")
         b, h, q, _ = query.shape
         if h != self.num_heads:
             raise ValueError(f"indexer expected {self.num_heads} heads, got {h}")
@@ -87,7 +123,7 @@ class LightningIndexer(nn.Module):
             best_indices: torch.Tensor | None = None
             best_valid: torch.Tensor | None = None
             key_offset = 0
-            for full_key, full_key_positions in zip(chunks, positions_chunks):
+            for chunk_index, (full_key, full_key_positions) in enumerate(zip(chunks, positions_chunks)):
                 if full_key.ndim != 3:
                     raise ValueError("key chunks must have shape [B, M, D]")
                 if full_key_positions.ndim == 1:
@@ -100,7 +136,17 @@ class LightningIndexer(nn.Module):
                     key = full_key[:, substart:substop]
                     key_positions = full_key_positions[:, substart:substop]
                     m = key.shape[1]
-                    projected_key = self.key(key).view(b, m, h, self.index_dim).permute(0, 2, 1, 3)
+                    if projected_key_chunks is None:
+                        projected_key = self.key(key).view(b, m, h, self.index_dim).permute(0, 2, 1, 3)
+                    else:
+                        projected_key = projected_key_chunks[chunk_index][:, :, substart:substop]
+                        scale = projected_key_scales[chunk_index]
+                        if projected_key.dtype.is_floating_point:
+                            projected_key = projected_key.to(block_query.dtype)
+                        else:
+                            if scale is None:
+                                raise ValueError("integer projected keys require scales")
+                            projected_key = (projected_key.float() * scale.float()).to(block_query.dtype)
                     scores = torch.einsum("bhqd,bhmd->bhqm", block_query, projected_key) * self.scale
                     allowed = key_positions[:, None, None, :] < block_positions[:, None, :, None]
                     allowed = allowed.expand(-1, h, -1, -1)

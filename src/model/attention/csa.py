@@ -17,9 +17,11 @@ class CompressedSparseAttention(nn.Module):
         index_dim: int,
         topk: int,
         candidate_chunk_size: int = 64,
+        index_dtype: str = "bfloat16",
     ) -> None:
         super().__init__()
         self.heads, self.kv_heads, self.head_dim, self.ratio = heads, kv_heads, head_dim, ratio
+        self.index_dtype = index_dtype
         self.compressor = LearnedCompressor(head_dim, ratio)
         self.indexer = LightningIndexer(head_dim, heads, index_dim, topk, candidate_chunk_size)
         self.sink_key = nn.Parameter(torch.zeros(heads, head_dim))
@@ -50,6 +52,8 @@ class CompressedSparseAttention(nn.Module):
         position_chunks: list[torch.Tensor],
         query_positions: torch.Tensor,
         query_block: int = 512,
+        index_key_chunks: list[torch.Tensor] | None = None,
+        index_scale_chunks: list[torch.Tensor | None] | None = None,
     ) -> torch.Tensor:
         """CSA over append-only compressed state with bounded temporaries."""
         if not (len(key_chunks) == len(value_chunks) == len(position_chunks)):
@@ -64,6 +68,13 @@ class CompressedSparseAttention(nn.Module):
         # stream.  This makes the intermediate KV-head ablation meaningful
         # instead of silently discarding every stream except stream zero.
         retrieval_chunks = [chunk.mean(dim=1) for chunk in key_chunks]
+        if index_key_chunks is not None and len(index_key_chunks) == len(key_chunks):
+            retrieval_index_chunks = index_key_chunks
+            retrieval_index_scales = index_scale_chunks
+        else:
+            retrieval_index_chunks, retrieval_index_scales = self.indexer.project_keys(
+                retrieval_chunks, self.index_dtype
+            )
         query_to_kv = torch.arange(self.heads, device=query.device) * self.kv_heads // self.heads
         outputs: list[torch.Tensor] = []
         for start in range(0, query.shape[2], query_block):
@@ -74,6 +85,8 @@ class CompressedSparseAttention(nn.Module):
                 query_positions[:, start:stop],
                 position_chunks,
                 query_block=stop - start,
+                projected_key_chunks=retrieval_index_chunks,
+                projected_key_scales=retrieval_index_scales,
             )
             block_out = query.new_zeros(query.shape[0], self.heads, stop - start, self.head_dim)
             offset = 0

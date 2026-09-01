@@ -14,6 +14,71 @@ import torch
 
 
 @dataclass
+class IndexStateStore:
+    """Append-only projected-key state for bounded Lightning retrieval.
+
+    ``bfloat16`` stores projected keys directly. Integer modes store a
+    symmetric per-chunk scale alongside the compact values.  Positions remain
+    in the compressed store because both structures share the same chunk
+    boundaries.
+    """
+
+    key_chunks: list[torch.Tensor] = field(default_factory=list)
+    scale_chunks: list[torch.Tensor | None] = field(default_factory=list)
+    dtype: str = "bfloat16"
+
+    def append(self, keys: torch.Tensor, scales: torch.Tensor | None = None) -> None:
+        if keys.ndim != 4:
+            raise ValueError("index keys must have shape [B, H, M, D]")
+        if self.dtype == "bfloat16":
+            if keys.dtype != torch.bfloat16 or scales is not None:
+                raise ValueError("bfloat16 index state must store bfloat16 keys without scales")
+        elif self.dtype.startswith("int"):
+            if keys.dtype not in {torch.int8, torch.int16, torch.int32, torch.int64}:
+                raise ValueError("integer index state must store integer keys")
+            if scales is None or scales.ndim != 4:
+                raise ValueError("integer index state requires [B, H, 1, 1] scales")
+        else:
+            raise ValueError(f"unsupported index state dtype: {self.dtype}")
+        if keys.shape[2] == 0:
+            return
+        self.key_chunks.append(keys)
+        self.scale_chunks.append(scales)
+
+    @property
+    def token_count(self) -> int:
+        return sum(int(chunk.shape[2]) for chunk in self.key_chunks)
+
+    @property
+    def memory_bytes(self) -> int:
+        total = sum(chunk.numel() * chunk.element_size() for chunk in self.key_chunks)
+        total += sum(
+            scale.numel() * scale.element_size()
+            for scale in self.scale_chunks
+            if scale is not None
+        )
+        return int(total)
+
+    def iter_chunks(self):
+        return zip(self.key_chunks, self.scale_chunks)
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "key_chunks": self.key_chunks,
+            "scale_chunks": self.scale_chunks,
+            "dtype": self.dtype,
+        }
+
+    @classmethod
+    def from_state_dict(cls, state: dict[str, object]) -> "IndexStateStore":
+        keys = list(state.get("key_chunks", []))
+        scales = list(state.get("scale_chunks", []))
+        if len(scales) < len(keys):
+            scales.extend([None] * (len(keys) - len(scales)))
+        return cls(keys, scales, str(state.get("dtype", "bfloat16")))  # type: ignore[arg-type]
+
+
+@dataclass
 class CompressedStateStore:
     """Append-only compressed K/V chunks with no historical concatenation."""
 
@@ -46,6 +111,13 @@ class CompressedStateStore:
     @property
     def token_count(self) -> int:
         return sum(int(chunk.shape[2]) for chunk in self.key_chunks)
+
+    @property
+    def memory_bytes(self) -> int:
+        total = sum(chunk.numel() * chunk.element_size() for chunk in self.key_chunks)
+        total += sum(chunk.numel() * chunk.element_size() for chunk in self.value_chunks)
+        total += sum(chunk.numel() * chunk.element_size() for chunk in self.position_chunks)
+        return int(total)
 
     def iter_chunks(self):
         return zip(self.key_chunks, self.value_chunks, self.position_chunks)
@@ -92,6 +164,7 @@ class LayerCache:
     pending_value: torch.Tensor | None = None
     pending_positions: torch.Tensor | None = None
     compressed: CompressedStateStore = field(default_factory=CompressedStateStore)
+    index: IndexStateStore = field(default_factory=IndexStateStore)
 
     def append(
         self,
@@ -101,6 +174,9 @@ class LayerCache:
         compressed_key: torch.Tensor | None = None,
         compressed_value: torch.Tensor | None = None,
         compressed_positions: torch.Tensor | None = None,
+        index_key: torch.Tensor | None = None,
+        index_scale: torch.Tensor | None = None,
+        index_dtype: str | None = None,
         local_window: int | None = None,
     ) -> None:
         """Append current-token state while retaining only bounded local K/V."""
@@ -138,6 +214,10 @@ class LayerCache:
                 # supplies group-end positions explicitly.
                 compressed_positions = positions[:, -compressed_key.shape[2] :]
             self.compressed.append(compressed_key, compressed_value, compressed_positions)
+            if index_dtype is not None:
+                self.index.dtype = index_dtype
+            if index_key is not None:
+                self.index.append(index_key, index_scale)
             self.compressed_key = None
             self.compressed_value = None
             self.compressed_positions = None
@@ -149,6 +229,25 @@ class LayerCache:
     @property
     def compressed_token_count(self) -> int:
         return self.compressed.token_count
+
+    @property
+    def memory_bytes(self) -> dict[str, int]:
+        local = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (self.key, self.value, self.positions)
+            if tensor is not None
+        )
+        pending = sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (self.pending_key, self.pending_value, self.pending_positions)
+            if tensor is not None
+        )
+        return {
+            "local_kv": int(local),
+            "pending_compression": int(pending),
+            "compressed_state": self.compressed.memory_bytes,
+            "index_state": self.index.memory_bytes,
+        }
 
     def materialize_compressed(self) -> tuple[torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         return self.compressed.materialize()
@@ -168,6 +267,7 @@ class LayerCache:
             "pending_value": self.pending_value,
             "pending_positions": self.pending_positions,
             "compressed": self.compressed.state_dict(),
+            "index": self.index.state_dict(),
             # Keep legacy fields so old inspection code can identify a cache
             # with no compressed chunks without forcing materialization.
             "compressed_key": self.compressed_key,
@@ -192,6 +292,9 @@ class KestrelCache:
         compressed_key: torch.Tensor | None = None,
         compressed_value: torch.Tensor | None = None,
         compressed_positions: torch.Tensor | None = None,
+        index_key: torch.Tensor | None = None,
+        index_scale: torch.Tensor | None = None,
+        index_dtype: str | None = None,
         local_window: int | None = None,
     ) -> None:
         self.get(layer_idx).append(
@@ -201,6 +304,9 @@ class KestrelCache:
             compressed_key,
             compressed_value,
             compressed_positions,
+            index_key,
+            index_scale,
+            index_dtype,
             local_window,
         )
 
@@ -210,6 +316,19 @@ class KestrelCache:
 
     def state_dict(self) -> dict[str, object]:
         return {str(idx): item.state_dict() for idx, item in self.layers.items()}
+
+    def memory_bytes(self) -> dict[str, int]:
+        totals = {
+            "local_kv": 0,
+            "pending_compression": 0,
+            "compressed_state": 0,
+            "index_state": 0,
+        }
+        for layer in self.layers.values():
+            for key, value in layer.memory_bytes.items():
+                totals[key] += value
+        totals["total"] = sum(totals.values())
+        return totals
 
     @classmethod
     def from_state_dict(cls, state: dict[str, object]) -> "KestrelCache":
@@ -230,6 +349,12 @@ class KestrelCache:
                     compressed_store.append(old_key, old_value, old_positions)
             else:
                 compressed_store = CompressedStateStore.from_state_dict(compressed)  # type: ignore[arg-type]
+            index_state = item.get("index")  # type: ignore[union-attr]
+            index_store = (
+                IndexStateStore.from_state_dict(index_state)  # type: ignore[arg-type]
+                if index_state is not None
+                else IndexStateStore()
+            )
             cache.layers[int(raw_idx)] = LayerCache(
                 key=item.get("key"),  # type: ignore[union-attr]
                 value=item.get("value"),  # type: ignore[union-attr]
@@ -243,6 +368,7 @@ class KestrelCache:
                 pending_value=item.get("pending_value"),  # type: ignore[union-attr]
                 pending_positions=item.get("pending_positions"),  # type: ignore[union-attr]
                 compressed=compressed_store,
+                index=index_store,
             )
             if cache.layers[int(raw_idx)].next_position == 0 and item.get("positions") is not None:  # type: ignore[union-attr]
                 cache.layers[int(raw_idx)].next_position = int(item["positions"].max().cpu()) + 1  # type: ignore[index]

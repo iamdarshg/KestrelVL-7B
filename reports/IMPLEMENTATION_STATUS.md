@@ -5,7 +5,8 @@ The repository was bootstrapped on 2026-08-31 from an empty worktree.
 The current implementation includes immutable source configuration copies and
 Luna targets, a Nemotron-sized V4-Flash-inspired reference attention stack with
 partial RoPE, sinks, shared KV, configurable index top-k, grouped low-rank
-output and mHC, a bounded local/compressed cache, chunked index retrieval,
+output and mHC, a bounded local/compressed cache, append-only INT8/BF16 index
+state with chunked retrieval,
 explicit long-context execution modes, a multimodal model shell with cached
 InternViT CPU-offload policy, data governance utilities, safetensors resume and
 Q4 release tooling, resumable stage tooling, a GCP budget guard, a local 4060

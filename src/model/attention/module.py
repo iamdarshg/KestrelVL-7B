@@ -51,6 +51,7 @@ class V4FlashAttention(nn.Module):
                 config.index_head_dim,
                 config.index_topk,
                 config.candidate_chunk_size,
+                config.index_dtype,
             )
         elif self.mode == "hca":
             self.csa = HeavilyCompressedAttention(
@@ -61,6 +62,7 @@ class V4FlashAttention(nn.Module):
                 config.index_head_dim,
                 config.index_topk,
                 config.candidate_chunk_size,
+                config.index_dtype,
             )
         # Reconstruction must begin exactly on the local branch.  A centered
         # sigmoid gives coefficient sigmoid(0)-0.5 == 0 while retaining a
@@ -109,6 +111,8 @@ class V4FlashAttention(nn.Module):
             compressed_chunks: list[torch.Tensor] = []
             compressed_value_chunks: list[torch.Tensor] = []
             compressed_position_chunks: list[torch.Tensor] = []
+            index_key_chunks: list[torch.Tensor] = []
+            index_scale_chunks: list[torch.Tensor | None] = []
             if self.csa is not None:
                 # Join only the incomplete current compression group with the
                 # new token chunk.  Complete historical groups stay in the
@@ -128,6 +132,15 @@ class V4FlashAttention(nn.Module):
                 item.pending_key = stream_key[:, :, consumed:]
                 item.pending_value = stream_value[:, :, consumed:]
                 item.pending_positions = stream_positions[:, consumed:]
+                if new_key.shape[2]:
+                    new_index, new_scales = self.csa.indexer.project_keys(
+                        [new_key.mean(dim=1)], self.csa.index_dtype
+                    )
+                    index_key = new_index[0]
+                    index_scale = new_scales[0]
+                else:
+                    index_key = None
+                    index_scale = None
                 cache.update(
                     self.layer_idx,
                     k,
@@ -136,11 +149,16 @@ class V4FlashAttention(nn.Module):
                     compressed_key=new_key,
                     compressed_value=new_value,
                     compressed_positions=new_positions,
+                    index_key=index_key,
+                    index_scale=index_scale,
+                    index_dtype=self.csa.index_dtype,
                     local_window=self.config.sliding_window,
                 )
                 compressed_chunks = list(item.compressed.key_chunks)
                 compressed_value_chunks = list(item.compressed.value_chunks)
                 compressed_position_chunks = list(item.compressed.position_chunks)
+                index_key_chunks = list(item.index.key_chunks)
+                index_scale_chunks = list(item.index.scale_chunks)
             else:
                 cache.update(
                     self.layer_idx,
@@ -169,6 +187,8 @@ class V4FlashAttention(nn.Module):
                         compressed_position_chunks,
                         qpos,
                         query_block=self.config.attention_query_block,
+                        index_key_chunks=index_key_chunks,
+                        index_scale_chunks=index_scale_chunks,
                     )
                 else:
                     compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)

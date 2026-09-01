@@ -136,11 +136,15 @@ def test_cache_keeps_bounded_local_state_and_chunked_compressed_state() -> None:
     assert cache.get(2).compressed_token_count == 10
     assert cache.get(3).compressed_token_count == 5
     assert len(cache.get(2).compressed.key_chunks) == 1
+    assert cache.get(2).index.dtype == "int8"
+    assert cache.get(2).index.token_count == 10
+    assert cache.get(2).memory_bytes["index_state"] > 0
 
     restored = KestrelCache.from_state_dict(cache.state_dict())
     assert restored.length() == 40
     assert restored.get(0).key is not None and restored.get(0).key.shape[2] == 4
     assert restored.get(2).compressed_token_count == 10
+    assert restored.get(2).index.token_count == 10
 
 
 def test_chunked_indexer_matches_eager_topk() -> None:

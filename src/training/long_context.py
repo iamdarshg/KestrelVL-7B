@@ -63,6 +63,10 @@ def detach_cache(cache: KestrelCache) -> None:
         layer.compressed.key_chunks = [chunk.detach() for chunk in layer.compressed.key_chunks]
         layer.compressed.value_chunks = [chunk.detach() for chunk in layer.compressed.value_chunks]
         layer.compressed.position_chunks = [chunk.detach() for chunk in layer.compressed.position_chunks]
+        layer.index.key_chunks = [chunk.detach() for chunk in layer.index.key_chunks]
+        layer.index.scale_chunks = [
+            None if chunk is None else chunk.detach() for chunk in layer.index.scale_chunks
+        ]
 
 
 def _sum_cross_entropy(logits: torch.Tensor, labels: torch.Tensor) -> tuple[torch.Tensor | None, int]:

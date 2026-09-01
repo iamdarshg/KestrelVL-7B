@@ -55,12 +55,14 @@ two-stream residual connection and is selected or rejected by the local
 ablation artifact rather than by assertion.
 
 The reference path never creates a full million-token attention mask. Query
-blocks score compressed keys in bounded chunks. This proves the memory contract
-but still needs a fused kernel before claiming production 1M-token throughput.
-The cache keeps the final 128 local tokens and append-only compressed BF16
-chunks; `reports/DIMENSION_MAPPING.md` records the dimension transplant and
-the distinction between compact local candidate offsets and gather-safe
-absolute indices.
+blocks score compressed keys in bounded chunks. Compressed history is paired
+with an append-only Lightning Index state: INT8 projected keys plus BF16 scales
+by default, or BF16 projected keys for the quality mode. This proves the
+memory contract but still needs a fused kernel before claiming production
+1M-token throughput. The cache keeps the final 128 local tokens and append-only
+compressed BF16 chunks; `reports/DIMENSION_MAPPING.md` records the dimension
+transplant and the distinction between compact local candidate offsets and
+gather-safe absolute indices.
 
 ```text
 tokens ──> Qwen/Nemotron embedding ──> decoder layers ──> LM head
