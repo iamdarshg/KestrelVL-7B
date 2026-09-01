@@ -38,7 +38,6 @@ def distillation_loss(
         raise ValueError("temperature must be positive")
     s = student_logits.float() / temperature
     t = teacher_logits.float() / temperature
-    token_shape = s.shape[:-1]
     if direction == "forward":
         values = F.kl_div(
             F.log_softmax(s, dim=-1), F.softmax(t, dim=-1), reduction="none"

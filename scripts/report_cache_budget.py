@@ -10,8 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from eval.long_context import estimate_cache_memory
-from model.configuration import KestrelConfig
+from eval.long_context import estimate_cache_memory  # noqa: E402
+from model.configuration import KestrelConfig  # noqa: E402
 
 
 def main() -> None:

@@ -4,7 +4,6 @@ import torch
 from model import KestrelConfig, KestrelForCausalLM
 from model.attention.cache import KestrelCache
 from model.attention.csa import CompressedSparseAttention
-from model.attention.grouped_output import GroupedLowRankOutput
 from model.attention.lightning_indexer import LightningIndexer
 from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
