@@ -152,6 +152,7 @@ class KestrelForCausalLM(nn.Module):
         position_ids: torch.Tensor | None = None,
         past_key_values: KestrelCache | None = None,
         return_dict: bool = True,
+        logits_to_keep: int | None = None,
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         x = self.embed_tokens(input_ids)
         prefix = 0
@@ -169,7 +170,12 @@ class KestrelForCausalLM(nn.Module):
         branch = None
         for layer in self.layers:
             x, branch = layer(x, position_ids, past_key_values)
-        logits = self.lm_head(self.norm(x))
+        normalized = self.norm(x)
+        if logits_to_keep is not None:
+            if logits_to_keep < 1:
+                raise ValueError("logits_to_keep must be positive")
+            normalized = normalized[:, -logits_to_keep:]
+        logits = self.lm_head(normalized)
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), labels[:, 1:].reshape(-1), ignore_index=-100)

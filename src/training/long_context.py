@@ -141,6 +141,7 @@ def run_chunked_forward(
             labels=None,
             pixel_values=pixel_values if start == 0 else None,
             past_key_values=cache,
+            logits_to_keep=None if labels is not None or collect_logits else 1,
         )
         logits = output.logits
         # A multimodal prefill has a visual prefix.  Only the final text

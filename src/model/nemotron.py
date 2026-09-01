@@ -313,6 +313,7 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         past_key_values: KestrelCache | None = None,
         return_dict: bool = True,
         output_hidden_states: bool = False,
+        logits_to_keep: int | None = None,
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         del attention_mask
         x = self.embed_tokens(input_ids)
@@ -351,6 +352,10 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                 past_key_values=past_key_values,
                 hidden_states=hidden_states,
             )
+        if logits_to_keep is not None:
+            if logits_to_keep < 1:
+                raise ValueError("logits_to_keep must be positive")
+            hidden_states = hidden_states[:, -logits_to_keep:]
         logits = self.lm_head(hidden_states)
         if self.debug_finite and not torch.isfinite(logits).all():
             raise FloatingPointError("non-finite LM-head logits")
