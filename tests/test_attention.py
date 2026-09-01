@@ -377,6 +377,14 @@ def test_vision_output_adapter_selects_tipsv2_patch_tokens() -> None:
     assert _extract_token_sequence(nested) is patches
 
 
+def test_vision_adapter_casts_pixels_to_loaded_model_dtype() -> None:
+    encoder = InternViTEncoder(hidden_size=16)
+    encoder.model = encoder.model.to(dtype=torch.bfloat16)
+    tokens = encoder(torch.rand(1, 3, 28, 28))
+    assert tokens.dtype == torch.bfloat16
+    assert torch.isfinite(tokens).all()
+
+
 def test_real_nemotron_wrapper_grafts_vision_projector_and_cache() -> None:
     config = KestrelConfig.tiny(use_vision=True)
     vision = InternViTEncoder(hidden_size=config.vision_hidden_size)
