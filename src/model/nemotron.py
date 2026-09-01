@@ -188,14 +188,49 @@ class RealDecoderLayer(nn.Module):
         self.mlp_mhc = ManifoldHyperConnection(
             config.mhc_streams, config.mhc_sinkhorn_iters, config.mhc_enabled
         ).to(device=next(attention.parameters()).device, dtype=next(attention.parameters()).dtype)
+        self.debug_finite = False
+        self.debug_layer_index = -1
 
     def forward(
         self, x: torch.Tensor, position_ids: torch.Tensor, cache: KestrelCache | None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        attn, branch = self.attention(self.input_norm(x), position_ids, cache)
-        x = self.attn_mhc(x, attn)
-        update = self.mlp(self.post_norm(x))
+        normed = self.input_norm(x)
+        if self.debug_finite and not torch.isfinite(normed).all():
+            raise FloatingPointError("non-finite input-normalized hidden state")
+        attn, branch = self.attention(normed, position_ids, cache)
+        if self.debug_finite and not torch.isfinite(attn).all():
+            raise FloatingPointError("non-finite attention output")
+        if self.debug_finite and not torch.isfinite(branch).all():
+            raise FloatingPointError("non-finite attention branch")
+        base = x
+        x = self.attn_mhc(base, attn)
+        if self.debug_finite and not torch.isfinite(x).all():
+            base_max = float(torch.nan_to_num(base.detach()).abs().max().detach().float())
+            attn_max = float(torch.nan_to_num(attn).abs().max().detach().float())
+            matrix_max = float(self.attn_mhc.matrix().abs().max().detach().float())
+            raise FloatingPointError(
+                f"non-finite attention mHC output base_max={base_max} "
+                f"attn_max={attn_max} matrix_max={matrix_max}"
+            )
+        post_normed = self.post_norm(x)
+        if self.debug_finite and not torch.isfinite(post_normed).all():
+            raise FloatingPointError("non-finite post-attention normalized state")
+        update = self.mlp(post_normed)
+        if self.debug_finite:
+            print(
+                "layer_stats"
+                f" layer={self.debug_layer_index}"
+                f" input={float(torch.nan_to_num(base).abs().max().detach().float()):.4g}"
+                f" attn={float(torch.nan_to_num(attn).abs().max().detach().float()):.4g}"
+                f" norm={float(torch.nan_to_num(post_normed).abs().max().detach().float()):.4g}"
+                f" mlp={float(torch.nan_to_num(update).abs().max().detach().float()):.4g}",
+                flush=True,
+            )
+        if self.debug_finite and not torch.isfinite(update).all():
+            raise FloatingPointError("non-finite MLP output")
         x = self.mlp_mhc(x, update)
+        if self.debug_finite and not torch.isfinite(x).all():
+            raise FloatingPointError("non-finite MLP mHC output")
         return x, branch
 
 
@@ -221,15 +256,22 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         self.base_model_id = base_model_id
         self.base_revision = base_revision
         self.gradient_checkpointing = False
+        self.debug_finite = False
+        self.trainable_layer_start = 0
 
     def enable_gradient_checkpointing(self, enabled: bool = True) -> None:
         """Checkpoint decoder-layer activations for the 8 GiB local profile."""
         self.gradient_checkpointing = enabled
 
-    def freeze_backbone(self) -> None:
+    def freeze_backbone(self, trainable_layer_start: int = 0) -> None:
+        if not 0 <= trainable_layer_start <= len(self.layers):
+            raise ValueError("trainable_layer_start must be within decoder depth")
+        self.trainable_layer_start = trainable_layer_start
         for parameter in self.parameters():
             parameter.requires_grad_(False)
-        for layer in self.layers:
+        for layer_index, layer in enumerate(self.layers):
+            if layer_index < trainable_layer_start:
+                continue
             for parameter in layer.attention.parameters():
                 parameter.requires_grad_(True)
             if self.config.mhc_enabled:
@@ -251,6 +293,11 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         for name, parameter in own.items():
             if parameter.requires_grad:
                 if name not in state:
+                    # The first SVD cache predates the stabilizing attention
+                    # residual scale.  Keep its valid factors and retain the
+                    # new parameter's configured initialization.
+                    if name.endswith(".attention.output_scale"):
+                        continue
                     missing.append(name)
                 else:
                     parameter.data.copy_(state[name].to(parameter.device, parameter.dtype))
@@ -265,24 +312,48 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         position_ids: torch.Tensor | None = None,
         past_key_values: KestrelCache | None = None,
         return_dict: bool = True,
+        output_hidden_states: bool = False,
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         del attention_mask
         x = self.embed_tokens(input_ids)
+        if self.debug_finite and not torch.isfinite(x).all():
+            raise FloatingPointError("non-finite embedding output")
         if position_ids is None:
             start = past_key_values.length(0) if past_key_values is not None else 0
             position_ids = torch.arange(start, start + x.shape[1], device=x.device).view(1, -1)
             position_ids = position_ids.expand(x.shape[0], -1)
         branch = None
-        for layer in self.layers:
+        for layer_index, layer in enumerate(self.layers):
+            layer.debug_finite = self.debug_finite
+            layer.debug_layer_index = layer_index
             if self.training and self.gradient_checkpointing and past_key_values is None:
+                if layer_index < self.trainable_layer_start:
+                    with torch.no_grad():
+                        x, branch = layer(x, position_ids, None)
+                    continue
                 x, branch = checkpoint(
                     lambda hidden, current_layer=layer: current_layer(hidden, position_ids, None),
                     x,
                     use_reentrant=False,
                 )
+            elif self.training and layer_index < self.trainable_layer_start and past_key_values is None:
+                with torch.no_grad():
+                    x, branch = layer(x, position_ids, None)
             else:
                 x, branch = layer(x, position_ids, past_key_values)
-        logits = self.lm_head(self.norm(x))
+            if self.debug_finite and not torch.isfinite(x).all():
+                raise FloatingPointError(f"non-finite decoder output at layer {layer_index}")
+        hidden_states = self.norm(x)
+        if output_hidden_states:
+            empty_logits = hidden_states.new_empty(*hidden_states.shape[:-1], 0)
+            return KestrelOutput(
+                logits=empty_logits,
+                past_key_values=past_key_values,
+                hidden_states=hidden_states,
+            )
+        logits = self.lm_head(hidden_states)
+        if self.debug_finite and not torch.isfinite(logits).all():
+            raise FloatingPointError("non-finite LM-head logits")
         loss = None
         if labels is not None:
             loss = F.cross_entropy(

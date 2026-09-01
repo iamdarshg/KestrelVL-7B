@@ -83,7 +83,12 @@ def retain_only_best_archive(results: list[dict[str, object]], archive_root: str
     results[best_index]["checkpoint_retained"] = True
 
 
-def loss_for_batch(model: torch.nn.Module, inputs: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+def loss_for_batch(
+    model: torch.nn.Module,
+    inputs: torch.Tensor,
+    labels: torch.Tensor,
+    training_logit_stride: int = 1,
+) -> torch.Tensor:
     """Score the already-shifted corpus batch without dropping another token.
 
     ``CompositionLockedCorpus.batch`` returns input/target pairs with equal
@@ -92,10 +97,22 @@ def loss_for_batch(model: torch.nn.Module, inputs: torch.Tensor, labels: torch.T
     shift twice.  The ablation runner therefore computes CE directly and
     counts every target token in the fixed budget.
     """
-    output = model(inputs)
+    if training_logit_stride < 1:
+        raise ValueError("training_logit_stride must be positive")
+    if training_logit_stride == 1:
+        output = model(inputs)
+        logits = output.logits
+        targets = labels
+    else:
+        output = model(inputs, output_hidden_states=True)
+        if output.hidden_states is None:
+            raise RuntimeError("real model did not return hidden states for sampled training loss")
+        hidden = output.hidden_states[:, ::training_logit_stride]
+        targets = labels[:, ::training_logit_stride]
+        logits = model.lm_head(hidden)
     return F.cross_entropy(
-        output.logits.float().reshape(-1, output.logits.shape[-1]),
-        labels.reshape(-1),
+        logits.float().reshape(-1, logits.shape[-1]),
+        targets.reshape(-1),
     )
 
 
@@ -165,6 +182,11 @@ def run_option(
     device: torch.device,
 ) -> dict[str, object]:
     seed_all(args.seed)
+    compute_dtype = (
+        torch.bfloat16
+        if device.type == "cuda" and torch.cuda.is_bf16_supported()
+        else torch.float16
+    )
     config = config_for(option)
     model, load_info = load_real_nemotron_transplant(
         config,
@@ -172,7 +194,7 @@ def run_option(
         revision=args.revision,
         device=device,
         load_in_4bit=True,
-        compute_dtype=torch.float16,
+        compute_dtype=compute_dtype,
         skip_svd_initialization=bool(
             args.init_cache
             and option_index in (0, 1, 3)
@@ -182,17 +204,20 @@ def run_option(
     if args.init_cache and option_index in (0, 1, 3) and Path(args.init_cache).exists():
         cached_state = torch.load(args.init_cache, map_location="cpu", weights_only=False)
         model.load_trainable_state_dict(cached_state)
-        # Older interrupted attempts may have been cached before the opening
-        # gate fix; normalize that one scalar without altering other factors.
-        for layer in model.layers:
-            layer.attention.compressed_gate.data.fill_(-10.0)
+        # The gate is centered at zero in the current architecture.  An older
+        # cache with gate=0 is therefore compatible and starts exactly on the
+        # local branch; preserve the cached trainable state for reproducibility.
         del cached_state
         print(f"reused SVD initialization for {option['name']} from {args.init_cache}", flush=True)
     elif args.init_cache and option_index == 0 and not Path(args.init_cache).exists():
         Path(args.init_cache).parent.mkdir(parents=True, exist_ok=True)
         torch.save(model.trainable_state_dict(), args.init_cache)
         print(f"saved reusable SVD initialization to {args.init_cache}", flush=True)
+    # Load all cached SVD factors first.  Only then narrow the trainable scope
+    # for the local 4060 screen so frozen prefix layers retain real weights.
+    model.freeze_backbone(trainable_layer_start=args.trainable_layer_start)
     model.enable_gradient_checkpointing(args.gradient_checkpointing)
+    model.debug_finite = args.debug_finite
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)
@@ -242,7 +267,7 @@ def run_option(
                 break
             inputs, labels = corpus.batch(token_cursor, length, validation=False)
             inputs, labels = inputs.to(device), labels.to(device)
-            loss = loss_for_batch(model, inputs, labels)
+            loss = loss_for_batch(model, inputs, labels, args.training_logit_stride)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f"non-finite loss in {option['name']} at step {step}")
             optimizer.zero_grad(set_to_none=True)
@@ -342,6 +367,9 @@ def run_option(
         "trainable_parameter_count": model.parameter_count(trainable_only=True),
         "muon_matrix_parameters": getattr(optimizer, "matrix_parameter_count", None),
         "minimal_adamw_vector_parameters": getattr(optimizer, "vector_parameter_count", None),
+        "trainable_layer_start": args.trainable_layer_start,
+        "compute_dtype": str(compute_dtype),
+        "training_logit_stride": args.training_logit_stride,
         "checkpoint": str(final_checkpoint),
         "optimizer_snapshot_retained": False,
         "load_info": load_info.__dict__,
@@ -373,6 +401,24 @@ def main() -> None:
         help="retain only the newest atomic checkpoint per candidate on the local disk",
     )
     parser.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--trainable-layer-start",
+        type=int,
+        default=0,
+        help="keep all real layers in the forward pass but train only this suffix; 0 means all layers",
+    )
+    parser.add_argument(
+        "--debug-finite",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="enable layer/component finite checks before spending ablation tokens",
+    )
+    parser.add_argument(
+        "--training-logit-stride",
+        type=int,
+        default=1,
+        help="compute training CE on every Nth target while still processing every corpus token; validation stays exact",
+    )
     parser.add_argument("--checkpoint-root", default="checkpoints/real_ablations")
     parser.add_argument(
         "--final-archive-root",

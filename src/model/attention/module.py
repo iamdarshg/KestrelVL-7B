@@ -60,10 +60,16 @@ class V4FlashAttention(nn.Module):
                 config.index_head_dim,
                 config.index_topk,
             )
-        # Reconstruction must begin from the local branch.  sigmoid(0)=0.5
-        # would inject an untrained sparse branch before distillation; -10
-        # gives a genuinely near-zero opening gate while keeping it learnable.
-        self.compressed_gate = nn.Parameter(torch.tensor(-10.0))
+        # Reconstruction must begin exactly on the local branch.  A centered
+        # sigmoid gives coefficient sigmoid(0)-0.5 == 0 while retaining a
+        # non-zero derivative for recovery.  The exact-zero fast path below
+        # also prevents an untrained compressed branch containing a NaN from
+        # being multiplied by zero (0 * NaN is still NaN in IEEE arithmetic).
+        self.compressed_gate = nn.Parameter(torch.tensor(0.0))
+        # SVD is an approximation of the old GQA mixer.  Start the new
+        # residual small enough to keep the frozen Nemotron body in range
+        # while Muon recovers the replacement matrices from step one.
+        self.output_scale = nn.Parameter(torch.tensor(config.attention_output_scale_init))
 
     def _positions(self, x: torch.Tensor, positions: torch.Tensor | None, cache: KestrelCache | None) -> torch.Tensor:
         if positions is not None:
@@ -101,8 +107,12 @@ class V4FlashAttention(nn.Module):
         value_for_local = value.repeat_interleave(self.config.num_attention_heads // self.config.num_key_value_heads, dim=1)
         local = sliding_causal_attention(q, key_for_local, value_for_local, qpos, key_positions, self.config.sliding_window)
         if self.csa is not None:
-            compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)
-            branch = local + torch.sigmoid(self.compressed_gate) * compressed
+            gate = torch.sigmoid(self.compressed_gate) - 0.5
+            if abs(float(gate.detach())) < 1e-8:
+                branch = local
+            else:
+                compressed = self.csa(compressed_q, compressed_key, value, qpos, key_positions)
+                branch = local + gate * compressed
         else:
             branch = local
-        return self.out(branch.transpose(1, 2)), branch
+        return self.output_scale * self.out(branch.transpose(1, 2)), branch

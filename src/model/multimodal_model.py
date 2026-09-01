@@ -49,6 +49,7 @@ class KestrelOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None = None
     past_key_values: KestrelCache | None = None
+    hidden_states: torch.Tensor | None = None
 
 
 class KestrelForCausalLM(nn.Module):
@@ -125,4 +126,3 @@ class KestrelForCausalLM(nn.Module):
 
     def parameter_count(self, trainable_only: bool = False) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad or not trainable_only)
-

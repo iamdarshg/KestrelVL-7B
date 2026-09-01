@@ -37,6 +37,7 @@ class KestrelConfig:
     mhc_enabled: bool = True
     mhc_streams: int = 2
     mhc_sinkhorn_iters: int = 6
+    attention_output_scale_init: float = 0.01
     dropout: float = 0.0
     rms_norm_eps: float = 1e-6
     layer_schedule: list[str] = field(default_factory=list)
@@ -55,6 +56,8 @@ class KestrelConfig:
             raise ValueError("attention dimensions must be positive")
         if self.mhc_streams < 1:
             raise ValueError("mhc_streams must be positive")
+        if self.attention_output_scale_init < 0:
+            raise ValueError("attention_output_scale_init must be non-negative")
 
     @property
     def rotary_dim(self) -> int:
@@ -90,4 +93,3 @@ class KestrelConfig:
         if "layer_schedule" not in values:
             values["layer_schedule"] = ["sliding", "sliding", "csa", "hca"]
         return cls(**values)
-

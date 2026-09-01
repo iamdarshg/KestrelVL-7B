@@ -42,10 +42,18 @@ class ManifoldHyperConnection(nn.Module):
             return base + update
         # First stream is the base and second is the update. Extra streams are
         # zero-filled, which keeps the API extensible without hidden copies.
-        streams = base.new_zeros(*base.shape[:-1], self.streams, base.shape[-1])
-        streams[..., 0, :] = base
+        # Keep the connection and residual accumulation in FP32.  In FP16,
+        # even finite residual terms can overflow during the stream einsum or
+        # final addition before the next RMSNorm has a chance to rescale them.
+        work_dtype = torch.float32 if base.dtype in (torch.float16, torch.bfloat16) else base.dtype
+        base_work = base.to(work_dtype)
+        update_work = update.to(work_dtype)
+        streams = torch.zeros(
+            *base.shape[:-1], self.streams, base.shape[-1], device=base.device, dtype=work_dtype
+        )
+        streams[..., 0, :] = base_work
         if self.streams > 1:
-            streams[..., 1, :] = update
-        mixed = torch.einsum("ij,btjd->btid", self.matrix(), streams)
-        return base + self.residual_scale * mixed[..., 0, :]
-
+            streams[..., 1, :] = update_work
+        mixed = torch.einsum("ij,btjd->btid", self.matrix().to(work_dtype), streams)
+        output = base_work + self.residual_scale.to(work_dtype) * mixed[..., 0, :]
+        return output.to(dtype=base.dtype)
