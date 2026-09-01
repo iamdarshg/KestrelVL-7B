@@ -11,6 +11,7 @@ passed the load and image smoke tests.
 from pathlib import Path
 from typing import Any
 from contextlib import nullcontext
+import json
 
 import torch
 from torch import nn
@@ -53,6 +54,44 @@ def _extract_token_sequence(output: Any) -> torch.Tensor:
         if torch.is_tensor(candidate):
             return candidate
     raise TypeError("vision encoder output has no patch-token sequence")
+
+
+def _load_local_model_with_safetensors_fallback(
+    model_path: Path,
+    torch_dtype: torch.dtype | None,
+) -> nn.Module:
+    """Load a local custom-code model when Transformers rejects bare metadata.
+
+    Some Hugging Face custom checkpoints, including the published TIPSv2
+    artifact, contain a valid safetensors file without the optional
+    ``format`` metadata entry.  A few Transformers releases assume that entry
+    exists before they dispatch to ``trust_remote_code``.  Instantiating the
+    pinned config and loading the verified state dict directly preserves the
+    exact weights while avoiding that loader-only incompatibility.
+    """
+    from safetensors.torch import load_file
+    from transformers import AutoConfig, AutoModel
+
+    config = AutoConfig.from_pretrained(
+        str(model_path), trust_remote_code=True, local_files_only=True
+    )
+    kwargs: dict[str, object] = {"trust_remote_code": True}
+    if torch_dtype is not None:
+        kwargs["torch_dtype"] = torch_dtype
+    model = AutoModel.from_config(config, **kwargs)
+    state_path = model_path / "model.safetensors"
+    state = load_file(str(state_path), device="cpu")
+    incompatible = model.load_state_dict(state, strict=False)
+    if incompatible.missing_keys or incompatible.unexpected_keys:
+        raise RuntimeError(
+            "direct vision checkpoint load had incompatible keys: "
+            f"missing={incompatible.missing_keys[:3]} "
+            f"unexpected={incompatible.unexpected_keys[:3]}"
+        )
+    del state
+    if torch_dtype is not None:
+        model = model.to(dtype=torch_dtype)
+    return model
 
 
 def dynamic_tiles(image: Any, tile_size: int = 448, max_tiles: int = 16) -> torch.Tensor:
@@ -122,7 +161,27 @@ class InternViTEncoder(nn.Module):
                     kwargs["torch_dtype"] = torch_dtype
                 if Path(model_path).is_dir():
                     kwargs["local_files_only"] = True
-                self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
+                try:
+                    self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
+                except AttributeError:
+                    # Transformers 5.10-dev currently assumes safetensors
+                    # metadata is non-null.  TIPSv2's file is valid but bare;
+                    # use the direct local fallback only for that loader bug.
+                    local_config = Path(model_path) / "config.json"
+                    is_tipsv2 = False
+                    if local_config.exists():
+                        is_tipsv2 = json.loads(local_config.read_text(encoding="utf-8")).get(
+                            "model_type"
+                        ) == "tipsv2"
+                    if (
+                        not is_tipsv2
+                        or not Path(model_path).is_dir()
+                        or not (Path(model_path) / "model.safetensors").exists()
+                    ):
+                        raise
+                    self.model = _load_local_model_with_safetensors_fallback(
+                        Path(model_path), torch_dtype
+                    )
                 config = self.model.config
                 self.backend = str(getattr(config, "model_type", "internvit"))
                 self.hidden_size = int(
@@ -165,6 +224,10 @@ class InternViTEncoder(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         pixel_values = (pixel_values - self.pixel_mean.to(pixel_values)) / self.pixel_std.to(pixel_values)
+        model_parameter = next(self.model.parameters(), None)
+        if model_parameter is not None and pixel_values.dtype != model_parameter.dtype:
+            if pixel_values.is_floating_point() and model_parameter.is_floating_point():
+                pixel_values = pixel_values.to(dtype=model_parameter.dtype)
         if self.backend == "tipsv2" and hasattr(self.model, "vision_encoder"):
             # TIPSv2's public encode_image method is decorated with
             # ``torch.no_grad``.  Calling the underlying ViT preserves the

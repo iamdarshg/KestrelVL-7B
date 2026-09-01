@@ -49,9 +49,24 @@ def _head(url: str) -> int:
     response = requests.head(url, allow_redirects=True, timeout=60)
     response.raise_for_status()
     length = response.headers.get("content-length")
-    if length is None:
+    if length is not None:
+        return int(length)
+    # Hugging Face may gzip small text files and omit HEAD's decoded length.
+    # A one-byte range reliably exposes the uncompressed repository size.
+    response.close()
+    probe = requests.get(
+        url,
+        headers={"Range": "bytes=0-0"},
+        allow_redirects=True,
+        stream=True,
+        timeout=(60, 180),
+    )
+    probe.raise_for_status()
+    content_range = probe.headers.get("content-range", "")
+    probe.close()
+    if "/" not in content_range:
         raise RuntimeError(f"content length missing for {url}")
-    return int(length)
+    return int(content_range.rsplit("/", 1)[1])
 
 
 def download_file(repo: str, filename: str, revision: str, destination: Path, chunk_size: int) -> dict[str, object]:

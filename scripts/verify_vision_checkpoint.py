@@ -41,6 +41,8 @@ def main() -> None:
         pixels = torch.rand(3, 448, 448)
     pixels = dynamic_tiles(pixels, max_tiles=args.max_tiles)
     device = torch.device(args.device)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
     with torch.set_grad_enabled(args.trainable_smoke):
         tokens = encoder.encode_with_policy(pixels.to(device), device, offload_to_cpu=False)
     result = {
@@ -54,6 +56,11 @@ def main() -> None:
         "finite": bool(torch.isfinite(tokens).all()),
         "telemetry": encoder.last_telemetry,
     }
+    if device.type == "cuda":
+        result["peak_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
+        result["peak_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
+        result["peak_allocated_gib"] = torch.cuda.max_memory_allocated(device) / 2**30
+        result["peak_reserved_gib"] = torch.cuda.max_memory_reserved(device) / 2**30
     if not result["finite"]:
         raise FloatingPointError("vision checkpoint emitted non-finite tokens")
     print(json.dumps(result, indent=2, default=str))
