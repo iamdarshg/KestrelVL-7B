@@ -83,6 +83,37 @@ screen, not a claim about full-scale model quality.
 The older `scripts/run_ablations.py` remains a fast tiny correctness proxy and
 must not be used for the real architecture choice.
 
+### BERT-targeted ablation
+
+To compare against a real BERT target, run:
+
+```powershell
+python scripts/run_bert_ablations.py --device cuda --total-tokens 10000000
+```
+
+This is a separate target-model protocol. It downloads/loads the real
+`bert-base-uncased` encoder, uses deterministic masked-language-model
+corruption, and keeps the same final-corpus source mixture and global 10M
+token budget. Each of the four candidates receives 2.5M processed corpus
+tokens (2.4M train plus 100K validation). The candidates are full versus
+bidirectional local-128 attention, crossed with mHC enabled versus disabled.
+The no-mHC candidate is algebraically equivalent to the original BERT
+residual computation; mHC is inserted before each attention and feed-forward
+LayerNorm. Results are written to
+`reports/ablations/bert_ablation_results.json` and the selected candidate to
+`reports/ablations/bert_target_selection.json`.
+
+The bounded local profile trains the top four BERT encoder layers by default
+(`--trainable-layer-start 8`) and freezes the original lexical embedding/MLM
+decoder. This keeps the comparison within the RTX 4060 memory/time envelope
+while preserving the real pretrained BERT geometry; pass
+`--trainable-layer-start 0` for a slower full-encoder adaptation.
+
+BERT is encoder-only and has a 512-position pretrained geometry, so these MLM
+results are not numerically comparable to the causal Nemotron/V4-Flash
+ablation. The original real-Nemotron screen remains available through
+`scripts/run_real_ablations.py`.
+
 ## Required gates and cost limit
 
 1. `pytest -q` must pass causal/sliding masking, compression, indexer, RoPE,

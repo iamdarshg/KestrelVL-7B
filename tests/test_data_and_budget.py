@@ -43,6 +43,29 @@ def test_muon_updates_matrices_and_vectors_finitely() -> None:
     assert not torch.equal(matrix, torch.eye(4))
 
 
+def test_muon_handles_grouped_matrix_parameters() -> None:
+    grouped = torch.nn.Parameter(torch.eye(4).repeat(2, 1, 1))
+    optimizer = Muon([grouped], lr=0.02, adamw_lr=1e-4)
+    grouped.grad = torch.ones_like(grouped)
+    optimizer.step()
+    assert torch.isfinite(grouped).all()
+    assert grouped.shape == (2, 4, 4)
+
+
+def test_muon_routes_oversized_matrices_to_adamw_fallback() -> None:
+    oversized = torch.nn.Parameter(torch.ones(5000, 2))
+    model = torch.nn.Module()
+    model.register_parameter("oversized", oversized)
+    optimizer = Muon(
+        [{"params": [oversized], "name": "fallback", "use_muon": False}],
+        lr=0.02,
+        adamw_lr=1e-4,
+    )
+    oversized.grad = torch.ones_like(oversized)
+    optimizer.step()
+    assert torch.isfinite(oversized).all()
+
+
 def test_corpus_composition_is_reproducible() -> None:
     spec = CorpusSpec(total_ablation_token_budget=10_000, validation_token_budget=100, source_block_tokens=1)
     corpus_a = CompositionLockedCorpus(spec, vocab_size=257)

@@ -3,7 +3,8 @@
   "sources": {
     "language": {"repo":"nvidia/OpenReasoning-Nemotron-7B", "revision":"main", "path":"config.json", "local_copy":"openreasoning_nemotron_7b_config.json"},
     "vision": {"repo":"OpenGVLab/InternViT-300M-448px-V2_5", "revision":"main", "path":"config.json", "local_copy":"internvit_300m_448_v2_5_config.json"},
-    "attention_reference": {"repo":"deepseek-ai/DeepSeek-V4-Flash-Base", "revision":"main", "path":"config.json", "local_copy":"deepseek_v4_flash_base_config.json"}
+    "attention_reference": {"repo":"deepseek-ai/DeepSeek-V4-Flash-Base", "revision":"main", "path":"config.json", "local_copy":"deepseek_v4_flash_base_config.json"},
+    "bert_ablation_target": {"repo":"google-bert/bert-base-uncased", "revision":"main", "path":"config.json", "local_copy":"bert_base_uncased_config.json"}
   },
   "sha256": "filled_by_scripts/verify_references.py"
 }
