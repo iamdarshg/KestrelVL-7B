@@ -182,6 +182,10 @@ def run_option(
     if args.init_cache and option_index in (1, 3) and Path(args.init_cache).exists():
         cached_state = torch.load(args.init_cache, map_location="cpu", weights_only=False)
         model.load_trainable_state_dict(cached_state)
+        # Older interrupted attempts may have been cached before the opening
+        # gate fix; normalize that one scalar without altering other factors.
+        for layer in model.layers:
+            layer.attention.compressed_gate.data.fill_(-10.0)
         del cached_state
         print(f"reused SVD initialization for {option['name']} from {args.init_cache}", flush=True)
     elif args.init_cache and option_index == 0 and not Path(args.init_cache).exists():

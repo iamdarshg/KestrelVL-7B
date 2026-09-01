@@ -60,7 +60,10 @@ class V4FlashAttention(nn.Module):
                 config.index_head_dim,
                 config.index_topk,
             )
-        self.compressed_gate = nn.Parameter(torch.tensor(0.0))
+        # Reconstruction must begin from the local branch.  sigmoid(0)=0.5
+        # would inject an untrained sparse branch before distillation; -10
+        # gives a genuinely near-zero opening gate while keeping it learnable.
+        self.compressed_gate = nn.Parameter(torch.tensor(-10.0))
 
     def _positions(self, x: torch.Tensor, positions: torch.Tensor | None, cache: KestrelCache | None) -> torch.Tensor:
         if positions is not None:
