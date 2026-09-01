@@ -52,7 +52,13 @@ class TinyVisionEncoder(nn.Module):
 class InternViTEncoder(nn.Module):
     """Loads the exact OpenGVLab model when requested; fallback is test-only."""
 
-    def __init__(self, model_path: str | Path | None = None, hidden_size: int = 1024, freeze: bool = True) -> None:
+    def __init__(
+        self,
+        model_path: str | Path | None = None,
+        hidden_size: int = 1024,
+        freeze: bool = True,
+        torch_dtype: torch.dtype | None = None,
+    ) -> None:
         super().__init__()
         self.model = None
         self.hidden_size = hidden_size
@@ -60,18 +66,48 @@ class InternViTEncoder(nn.Module):
             try:
                 from transformers import AutoModel
 
-                self.model = AutoModel.from_pretrained(str(model_path), trust_remote_code=True)
+                kwargs: dict[str, object] = {
+                    "trust_remote_code": True,
+                    "low_cpu_mem_usage": True,
+                }
+                if torch_dtype is not None:
+                    kwargs["torch_dtype"] = torch_dtype
+                if Path(model_path).is_dir():
+                    kwargs["local_files_only"] = True
+                self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
                 self.hidden_size = int(getattr(self.model.config, "hidden_size", hidden_size))
             except Exception as exc:  # pragma: no cover - depends on optional remote code/weights
                 raise RuntimeError(f"could not load InternViT at {model_path}: {exc}") from exc
         else:
             self.model = TinyVisionEncoder(hidden_size)
+        # The public graft API accepts RGB tensors in [0, 1].  InternViT uses
+        # CLIP-style channel normalization; read a model-specific override
+        # when remote config exposes one, otherwise use the published
+        # OpenCLIP defaults used by the InternViT family.
+        model_config = getattr(self.model, "config", None)
+        mean = getattr(model_config, "image_mean", None)
+        std = getattr(model_config, "image_std", None)
+        self.register_buffer(
+            "pixel_mean",
+            torch.tensor(
+                mean if mean is not None else [0.48145466, 0.4578275, 0.40821073]
+            ).view(1, 3, 1, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "pixel_std",
+            torch.tensor(
+                std if std is not None else [0.26862954, 0.26130258, 0.27577711]
+            ).view(1, 3, 1, 1),
+            persistent=False,
+        )
         self.last_telemetry: dict[str, object] = {}
         if freeze:
             for parameter in self.parameters():
                 parameter.requires_grad_(False)
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        pixel_values = (pixel_values - self.pixel_mean.to(pixel_values)) / self.pixel_std.to(pixel_values)
         output = self.model(pixel_values)
         if torch.is_tensor(output):
             return output

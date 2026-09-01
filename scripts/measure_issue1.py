@@ -44,7 +44,9 @@ def main() -> None:
         raise SystemExit("issue-#1 real inference measurement requires CUDA; use memory_sweep.py for CPU reference tests")
     lengths = [int(value) for value in args.lengths.split(",") if value.strip()]
     model, load_info = load_real_nemotron_transplant(
-        KestrelConfig(),
+        # Issue #1 text-memory probe: vision is measured separately so a
+        # missing InternViT artifact cannot silently change the VRAM contract.
+        KestrelConfig(use_vision=False),
         model_id=args.model_id,
         device=device,
         load_in_4bit=True,

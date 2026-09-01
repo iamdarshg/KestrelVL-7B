@@ -121,6 +121,15 @@ LayerNorm. Results are written to
 The completed result and its architecture-transfer boundary are summarized in
 [`reports/ablations/BERT_ABLATION_REPORT.md`](reports/ablations/BERT_ABLATION_REPORT.md).
 
+The accepted transfer decision is recorded in
+[`docs/decisions/0001-bert-proxy-selects-local-mhc.md`](docs/decisions/0001-bert-proxy-selects-local-mhc.md),
+and the real-weight graft contract is in
+[`docs/architecture/NEMOTRON_GRAFT_V1.md`](docs/architecture/NEMOTRON_GRAFT_V1.md).
+Initialize the actual Nemotron graft with
+`python scripts/graft_nemotron.py`; pass `--without-vision` only for the
+attention-only Issue #1 smoke. The multimodal path requires the real
+InternViT checkpoint downloaded outside Git.
+
 The bounded local profile trains the top four BERT encoder layers by default
 (`--trainable-layer-start 8`) and freezes the original lexical embedding/MLM
 decoder. This keeps the comparison within the RTX 4060 memory/time envelope

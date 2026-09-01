@@ -8,6 +8,9 @@ from model.attention.lightning_indexer import LightningIndexer
 from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
 from model.attention.sliding import sliding_causal_attention
+from model.nemotron import RealNemotronKestrelForCausalLM
+from model.vision.internvit import InternViTEncoder
+from model.vision.projector import AdaptiveVisionProjector
 from release.runtime import Q4Linear, load_q4_runtime
 from release.serialization import load_q4_bundle, save_q4_bundle
 from training.long_context import LongContextConfig, run_chunked_forward
@@ -263,3 +266,33 @@ def test_vision_policy_offloads_and_caches_encoded_tokens() -> None:
     second = model.visual_tokens(pixels, context_length=1)
     assert second.shape == first.shape
     assert model.last_vision_telemetry["cache_hit"] is True
+
+
+def test_real_nemotron_wrapper_grafts_vision_projector_and_cache() -> None:
+    config = KestrelConfig.tiny(use_vision=True)
+    vision = InternViTEncoder(hidden_size=config.vision_hidden_size)
+    projector = AdaptiveVisionProjector(
+        config.vision_hidden_size, config.hidden_size, config.vision_token_budget
+    )
+    model = RealNemotronKestrelForCausalLM(
+        config,
+        torch.nn.Embedding(config.vocab_size, config.hidden_size),
+        [],
+        torch.nn.RMSNorm(config.hidden_size),
+        torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False),
+        "test-nemotron",
+        None,
+        vision_encoder=vision,
+        vision_projector=projector,
+    )
+    model.set_vision_trainable("projector")
+    pixels = torch.rand(3, 20, 30)
+    first = model.visual_tokens(pixels, budget=8, kind="ide")
+    second = model.visual_tokens(pixels, budget=8, kind="ide")
+    assert first.shape == (1, 8, config.hidden_size)
+    assert torch.allclose(first, second)
+    assert model.last_vision_telemetry["cache_hit"] is True
+    assert all(parameter.requires_grad for parameter in projector.parameters())
+    assert all(not parameter.requires_grad for parameter in vision.parameters())
+    output = model(torch.ones(1, 4, dtype=torch.long), pixel_values=pixels, logits_to_keep=1)
+    assert output.logits.shape == (1, 1, config.vocab_size)

@@ -1,0 +1,51 @@
+name: kestrel-nemotron-v1-graft
+license: AGPL-3.0-only
+base_model: nvidia/OpenReasoning-Nemotron-7B
+vision_model: OpenGVLab/InternViT-300M-448px-V2_5
+
+# The BERT screen selected the local+mHC interaction.  In the causal model,
+# local attention is the first branch of the V4-style schedule rather than a
+# replacement for compressed retrieval.
+hidden_size: 3584
+layers: 28
+query_heads: 28
+kv_heads: 1
+head_dim: 128
+layer_schedule: [sliding, sliding, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca, csa, hca]
+sliding_window: 128
+csa_compression_ratio: 4
+hca_compression_ratio: 128
+index_topk: 256
+index_head_dim: 64
+index_dtype: int8
+compressed_kv_dtype: bfloat16
+q_lora_rank: 512
+partial_rotary_fraction: 0.125
+compress_rope_theta: 160000
+max_position_embeddings: 1048576
+output_groups: 4
+output_rank: 384
+
+mhc:
+  enabled: true
+  streams: 2
+  sinkhorn_iterations: 6
+  applies_to: [attention_residual, mlp_residual]
+
+vision:
+  preprocessing: dynamic_448px_tiles_with_internvit_normalization
+  ordinary_tokens: 512
+  document_tokens: 1024
+  ide_tokens: 2048
+  high_resolution_tokens: 4096
+  initial_trainable_stage: projector
+  staged_unfreeze: [projector, last4, upper12, all]
+  long_context_offload_threshold: 262144
+  cache_frozen_encoder_outputs: true
+
+training:
+  initial_language_scope: new_attention_and_mhc
+  initial_vision_scope: projector
+  frozen_language_components: [embeddings, rmsnorms, ffn, lm_head, tokenizer]
+  optimizer: muon_plus_minimal_adamw_vectors
+  per_device_micro_batch_size: 1

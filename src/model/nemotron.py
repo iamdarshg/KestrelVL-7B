@@ -9,6 +9,7 @@ and replaces only self-attention with the V4-Flash reference transplant.
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import struct
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from .attention.module import V4FlashAttention
 from .configuration import KestrelConfig
 from .multimodal_model import KestrelOutput
 from .transplant.svd_init import initialize_attention_from_dense
+from .vision.internvit import InternViTEncoder, dynamic_tiles
+from .vision.projector import AdaptiveVisionProjector
 
 
 def _materialize_linear_weight(module: nn.Module, dtype: torch.dtype) -> torch.Tensor:
@@ -168,6 +171,20 @@ def _load_streaming_skeleton(
     return base, reader
 
 
+def _find_vision_blocks(model: nn.Module) -> list[nn.Module] | None:
+    """Find InternViT transformer blocks across supported remote-code layouts."""
+    candidates: list[Any] = [model]
+    encoder = getattr(model, "encoder", None)
+    if encoder is not None:
+        candidates.append(encoder)
+    for candidate in candidates:
+        for name in ("layers", "blocks"):
+            blocks = getattr(candidate, name, None)
+            if blocks is not None and len(blocks) > 0:
+                return list(blocks)
+    return None
+
+
 class RealDecoderLayer(nn.Module):
     def __init__(
         self,
@@ -246,6 +263,8 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         lm_head: nn.Module,
         base_model_id: str,
         base_revision: str | None,
+        vision_encoder: InternViTEncoder | None = None,
+        vision_projector: AdaptiveVisionProjector | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -255,6 +274,10 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         self.lm_head = lm_head
         self.base_model_id = base_model_id
         self.base_revision = base_revision
+        self.vision_encoder = vision_encoder
+        self.vision_projector = vision_projector
+        self._vision_encoded_cache: dict[str, torch.Tensor] = {}
+        self.last_vision_telemetry: dict[str, object] = {}
         self.gradient_checkpointing = False
         self.debug_finite = False
         self.trainable_layer_start = 0
@@ -279,6 +302,129 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                     parameter.requires_grad_(True)
                 for parameter in layer.mlp_mhc.parameters():
                     parameter.requires_grad_(True)
+
+    def set_vision_trainable(self, stage: str = "projector") -> None:
+        """Select the staged InternViT graft update scope.
+
+        The language body and new attention remain controlled by
+        :meth:`freeze_backbone`.  This method only controls the vision graft:
+        ``projector`` is the safe initial phase, while ``last4`` and
+        ``upper12`` progressively unfreeze ViT blocks.  The block discovery is
+        deliberately tolerant of the two layouts used by InternViT remote
+        code (``encoder.layers`` and ``blocks``).
+        """
+        if stage not in {"none", "projector", "last4", "upper12", "all"}:
+            raise ValueError("vision stage must be none, projector, last4, upper12, or all")
+        if self.vision_encoder is None or self.vision_projector is None:
+            if stage != "none":
+                raise RuntimeError("a loaded vision graft is required for a non-none vision stage")
+            return
+        for parameter in self.vision_encoder.parameters():
+            parameter.requires_grad_(False)
+        for parameter in self.vision_projector.parameters():
+            parameter.requires_grad_(stage != "none")
+        if stage in {"none", "projector"}:
+            return
+        blocks = _find_vision_blocks(self.vision_encoder.model)
+        if blocks is None:
+            raise RuntimeError("could not locate InternViT blocks for staged unfreezing")
+        if stage == "all":
+            selected = blocks
+        elif stage == "last4":
+            selected = blocks[-4:]
+        else:
+            selected = blocks[-12:]
+        for block in selected:
+            for parameter in block.parameters():
+                parameter.requires_grad_(True)
+
+    def clear_vision_cache(self) -> None:
+        """Drop encoded frozen-image state before a new evaluation epoch."""
+        self._vision_encoded_cache.clear()
+
+    def _default_vision_budget(self, tile_count: int, kind: str) -> int:
+        named = {
+            "ordinary": self.config.vision_budget_ordinary,
+            "document": self.config.vision_budget_document,
+            "ide": self.config.vision_budget_ide,
+            "high_resolution": self.config.vision_budget_high_resolution,
+        }
+        if kind in named:
+            return named[kind]
+        if tile_count >= 8:
+            return self.config.vision_budget_high_resolution
+        if tile_count >= 4:
+            return self.config.vision_budget_ide
+        if tile_count >= 2:
+            return self.config.vision_budget_document
+        return self.config.vision_budget_ordinary
+
+    def visual_tokens(
+        self,
+        pixel_values: torch.Tensor,
+        budget: int | None = None,
+        context_length: int = 0,
+        kind: str = "auto",
+    ) -> torch.Tensor:
+        """Encode an image once and project it into the Nemotron stream.
+
+        A frozen InternViT is moved to CPU for very long prompts, encoded once,
+        and its output is cached on CPU.  The projector remains on the language
+        device, so long-context chunks do not repeatedly shuttle the ViT or
+        duplicate visual tokens.
+        """
+        if self.vision_encoder is None or self.vision_projector is None:
+            raise RuntimeError("vision is not loaded; pass --vision-model-id and enable use_vision")
+        if pixel_values.ndim == 3:
+            pixel_values = dynamic_tiles(pixel_values)
+        elif pixel_values.ndim == 4 and pixel_values.shape[0] == 1:
+            pixel_values = dynamic_tiles(pixel_values[0])
+        if pixel_values.ndim != 4 or pixel_values.shape[1] != 3:
+            raise ValueError("pixel_values must be RGB CHW, BCHW, or tiled [N,3,H,W]")
+        pixels = pixel_values.reshape(-1, *pixel_values.shape[-3:])
+        language_device = self.embed_tokens.weight.device
+        vision_frozen = not any(parameter.requires_grad for parameter in self.vision_encoder.parameters())
+        offload = bool(
+            context_length > self.config.vision_offload_threshold
+            and self.config.vision_freeze_long_context
+            and vision_frozen
+        )
+        cacheable = self.config.vision_cache_encoded and vision_frozen
+        cache_key = hashlib.sha256(
+            pixels.detach().to(device="cpu").contiguous().numpy().tobytes()
+        ).hexdigest()
+        cache_hit = False
+        if cacheable and cache_key in self._vision_encoded_cache:
+            encoded = self._vision_encoded_cache[cache_key].to(language_device, non_blocking=True)
+            cache_hit = True
+            self.last_vision_telemetry = {
+                "vision_device": "cached_cpu",
+                "language_device": str(language_device),
+                "offloaded": offload,
+                "encoded_once": False,
+                "cache_hit": True,
+                "tiles": int(pixels.shape[0]),
+                "tokens": int(encoded.shape[-2]),
+            }
+        else:
+            encoded = self.vision_encoder.encode_with_policy(
+                pixels,
+                language_device,
+                offload_to_cpu=offload,
+            )
+            self.last_vision_telemetry = dict(self.vision_encoder.last_telemetry)
+            if cacheable:
+                self._vision_encoded_cache[cache_key] = encoded.detach().to(device="cpu")
+        selected_budget = budget or self._default_vision_budget(int(pixels.shape[0]), kind)
+        self.last_vision_telemetry.update(
+            {
+                "cache_hit": cache_hit,
+                "budget": selected_budget,
+                "projector_device": str(next(self.vision_projector.parameters()).device),
+            }
+        )
+        encoded = encoded.reshape(1, -1, encoded.shape[-1])
+        return self.vision_projector(encoded, selected_budget)
 
     def trainable_state_dict(self) -> dict[str, torch.Tensor]:
         return {
@@ -309,6 +455,9 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
         labels: torch.Tensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        vision_budget: int | None = None,
+        vision_kind: str = "auto",
         position_ids: torch.Tensor | None = None,
         past_key_values: KestrelCache | None = None,
         return_dict: bool = True,
@@ -317,6 +466,24 @@ class RealNemotronKestrelForCausalLM(nn.Module):
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         del attention_mask
         x = self.embed_tokens(input_ids)
+        visual_prefix = 0
+        if pixel_values is not None:
+            if past_key_values is not None:
+                raise ValueError("pixel_values may only be supplied during prefill")
+            visual = self.visual_tokens(
+                pixel_values,
+                budget=vision_budget,
+                context_length=int(input_ids.shape[1]),
+                kind=vision_kind,
+            )
+            if visual.shape[0] != x.shape[0]:
+                if visual.shape[0] != 1:
+                    raise ValueError("vision batch must be 1 or match the text batch")
+                visual = visual.expand(x.shape[0], -1, -1)
+            x = torch.cat((visual, x), dim=1)
+            visual_prefix = visual.shape[1]
+            if labels is not None:
+                labels = F.pad(labels, (visual_prefix, 0), value=-100)
         if self.debug_finite and not torch.isfinite(x).all():
             raise FloatingPointError("non-finite embedding output")
         if position_ids is None:
@@ -364,6 +531,7 @@ class RealNemotronKestrelForCausalLM(nn.Module):
             loss = F.cross_entropy(
                 logits[:, :-1].float().reshape(-1, logits.shape[-1]),
                 labels[:, 1:].reshape(-1),
+                ignore_index=-100,
             )
         output = KestrelOutput(logits=logits, loss=loss, past_key_values=past_key_values)
         return output if return_dict else (logits, loss)
@@ -385,6 +553,8 @@ class NemotronLoadInfo:
     parameter_count: int
     trainable_parameter_count: int
     initialization_errors: tuple[dict[str, float], ...]
+    vision_loaded: bool = False
+    vision_model_id: str | None = None
 
 
 def load_real_nemotron_transplant(
@@ -395,13 +565,26 @@ def load_real_nemotron_transplant(
     load_in_4bit: bool = True,
     compute_dtype: torch.dtype = torch.float16,
     skip_svd_initialization: bool = False,
+    vision_model_id: str | Path | None = None,
+    vision_stage: str = "projector",
 ) -> tuple[RealNemotronKestrelForCausalLM, NemotronLoadInfo]:
-    """Load real Nemotron weights and construct one transplant candidate."""
+    """Load real Nemotron weights and construct one transplant candidate.
+
+    ``config.use_vision`` is intentionally explicit.  When enabled, callers
+    must provide the actual InternViT checkpoint rather than silently falling
+    back to the tiny test encoder.  This keeps issue-#1 multimodal evidence
+    honest while allowing the text-only memory probes to remain lightweight.
+    """
     from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 
     target = torch.device(device)
     if load_in_4bit and target.type != "cuda":
         raise ValueError("4-bit bitsandbytes loading is only supported on CUDA")
+    if config.use_vision and vision_model_id is None:
+        raise ValueError(
+            "config.use_vision=True requires vision_model_id for the real model; "
+            "use KestrelConfig(use_vision=False) for text-only measurements"
+        )
     local_root = Path(model_id)
     streaming = local_root.is_dir() and (local_root / "model.safetensors.index.json").exists()
     kwargs: dict[str, Any] = {
@@ -512,6 +695,20 @@ def load_real_nemotron_transplant(
         )
     else:
         embed_tokens, norm, lm_head = base.model.embed_tokens, base.model.norm, base.lm_head
+    vision_encoder: InternViTEncoder | None = None
+    vision_projector: AdaptiveVisionProjector | None = None
+    if config.use_vision:
+        vision_encoder = InternViTEncoder(
+            model_path=vision_model_id,
+            hidden_size=config.vision_hidden_size,
+            freeze=True,
+            torch_dtype=compute_dtype,
+        )
+        vision_projector = AdaptiveVisionProjector(
+            config.vision_hidden_size,
+            config.hidden_size,
+            config.vision_token_budget,
+        ).to(device=target, dtype=compute_dtype)
     model = RealNemotronKestrelForCausalLM(
         config,
         embed_tokens,
@@ -520,12 +717,16 @@ def load_real_nemotron_transplant(
         lm_head,
         model_id,
         revision,
+        vision_encoder=vision_encoder,
+        vision_projector=vision_projector,
     )
     del base
     gc.collect()
     if target.type == "cuda":
         torch.cuda.empty_cache()
     model.freeze_backbone()
+    if config.use_vision:
+        model.set_vision_trainable(vision_stage)
     info = NemotronLoadInfo(
         model_id=model_id,
         revision=revision,
@@ -534,5 +735,7 @@ def load_real_nemotron_transplant(
         parameter_count=model.parameter_count(),
         trainable_parameter_count=model.parameter_count(trainable_only=True),
         initialization_errors=tuple(errors),
+        vision_loaded=vision_encoder is not None,
+        vision_model_id=str(vision_model_id) if vision_model_id is not None else None,
     )
     return model, info

@@ -38,7 +38,9 @@ def main() -> None:
         raise SystemExit("real-Nemotron training smoke requires CUDA")
     compute_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     model, load_info = load_real_nemotron_transplant(
-        KestrelConfig(),
+        # Issue #1 language training probe; the multimodal offload path has
+        # its own explicit graft smoke and must not be implicit here.
+        KestrelConfig(use_vision=False),
         model_id=args.model_id,
         device=device,
         load_in_4bit=True,
