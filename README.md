@@ -51,8 +51,9 @@ The initial schedule is `[sliding, sliding, csa, hca, ...]`. CSA uses ratio 4
 compression, HCA uses ratio 128, one shared K/V representation, a configurable
 Lightning Indexer (`top-k` 64/128/256/512), partial RoPE, sinks, and grouped
 low-rank output. mHC is implemented as a Sinkhorn-projected doubly-stochastic
-two-stream residual connection and is selected or rejected by the local
-ablation artifact rather than by assertion.
+two-stream residual connection. The completed real-BERT proxy screen selects
+the bounded local-128 + mHC combination; the causal Nemotron-specific choices
+remain subject to the real-Nemotron screen.
 
 The reference path never creates a full million-token attention mask. Query
 blocks score compressed keys in bounded chunks. Compressed history is paired
@@ -116,6 +117,9 @@ residual computation; mHC is inserted before each attention and feed-forward
 LayerNorm. Results are written to
 `reports/ablations/bert_ablation_results.json` and the selected candidate to
 `reports/ablations/bert_target_selection.json`.
+
+The completed result and its architecture-transfer boundary are summarized in
+[`reports/ablations/BERT_ABLATION_REPORT.md`](reports/ablations/BERT_ABLATION_REPORT.md).
 
 The bounded local profile trains the top four BERT encoder layers by default
 (`--trainable-layer-start 8`) and freezes the original lexical embedding/MLM
