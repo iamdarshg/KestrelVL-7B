@@ -41,7 +41,7 @@ The exact machine-readable outputs are
 
 The BERT screen selects **local-128 attention with mHC enabled**. Relative to
 the strongest no-mHC candidate, its validation loss is lower by approximately
-54.4%; relative to global+mHC, it is lower by approximately 59.7%.
+49.3%; relative to global+mHC, it is lower by approximately 59.7%.
 
 For Kestrel, this is sufficient evidence to keep mHC enabled in the V1
 reference path and to retain a bounded local branch. It does **not** justify
