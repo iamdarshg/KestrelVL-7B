@@ -94,7 +94,9 @@ class CompressedSparseAttention(nn.Module):
                 count = compressed_key.shape[2]
                 if count == 0:
                     continue
-                selected_values = compressed_value.index_select(1, query_to_kv)
+                selected_values = compressed_value.index_select(
+                    1, query_to_kv.to(compressed_value.device)
+                ).to(query.device, non_blocking=True)
                 in_chunk = (indices >= offset) & (indices < offset + count) & selected_valid
                 safe_indices = (indices - offset).clamp(0, count - 1)
                 gathered = selected_values[:, :, None, :, :].expand(

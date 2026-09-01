@@ -2,7 +2,7 @@
 
 KestrelVL is an approximately 7–8B-class multimodal coding/reasoning
 research model. It starts from `nvidia/OpenReasoning-Nemotron-7B`, keeps the
-dense Qwen body and tokenizer, and adds an InternViT developer-vision graft
+dense Qwen body and tokenizer, and adds an InternViT/TIPSv2 developer-vision graft
 plus a reference-first, V4-Flash-inspired attention transplant. The
 repository is licensed under the GNU Affero General Public License v3.0; see
 `LICENSE` and `NOTICE` for the important third-party model/data boundaries.
@@ -38,7 +38,15 @@ python scripts/run_local.py --prompt "Explain this function and suggest a test."
 
 With a local Hugging Face checkpoint, use `--model-path`. A screenshot can be
 passed with `--image`; the fallback vision encoder keeps the API usable for
-tests, while production InternViT loading uses the immutable reference config.
+tests, while production InternViT/TIPSv2 loading uses the immutable reference
+configs.
+
+To fetch and image-smoke the TIPSv2 alternative:
+
+```powershell
+python scripts/download_tipsv2.py
+python scripts/verify_vision_checkpoint.py .\data\raw\tipsv2-l14
+```
 
 ```powershell
 python scripts/run_local.py --model-path .\checkpoints\18_q4_release `
@@ -65,6 +73,13 @@ compressed BF16 chunks; `reports/DIMENSION_MAPPING.md` records the dimension
 transplant and the distinction between compact local candidate offsets and
 gather-safe absolute indices.
 
+For long-context inference, `LongContextConfig(cache_device="cpu")` keeps the
+compressed K/V and index state in host RAM and transfers only bounded retrieval
+chunks to the active device. The default analytical state estimate is 7.753
+GiB at 1M tokens and 11.090 GiB at 1.5M before weights or activations, so the
+8 GiB target cannot keep the full long-context cache on the GPU. Generate the
+non-claiming estimate with `python scripts/report_cache_budget.py`.
+
 ```text
 tokens ──> Qwen/Nemotron embedding ──> decoder layers ──> LM head
                                       │
@@ -72,7 +87,7 @@ tokens ──> Qwen/Nemotron embedding ──> decoder layers ──> LM head
                                       │
                   shared compressed K=V + Lightning Indexer
 
-image ──> dynamic 448px tiles ──> InternViT-300M ──> adaptive projector
+image ──> dynamic 448px tiles ──> InternViT or TIPSv2-L/14 ──> adaptive projector
                                                      │
                               visual tokens inserted into the text stream
 ```
@@ -127,8 +142,8 @@ and the real-weight graft contract is in
 [`docs/architecture/NEMOTRON_GRAFT_V1.md`](docs/architecture/NEMOTRON_GRAFT_V1.md).
 Initialize the actual Nemotron graft with
 `python scripts/graft_nemotron.py`; pass `--without-vision` only for the
-attention-only Issue #1 smoke. The multimodal path requires the real
-InternViT checkpoint downloaded outside Git.
+attention-only Issue #1 smoke. The multimodal path requires a complete local
+InternViT or TIPSv2 checkpoint downloaded outside Git.
 
 The bounded local profile trains the top four BERT encoder layers by default
 (`--trainable-layer-start 8`) and freezes the original lexical embedding/MLM

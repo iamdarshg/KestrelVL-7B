@@ -22,6 +22,7 @@ class LongContextConfig:
     execution_chunk_tokens: int = 8192
     detach_interval_tokens: int = 8192
     max_context_tokens: int = 1_048_576
+    cache_device: str = "same"
 
     def __post_init__(self) -> None:
         if self.mode not in {"full_recompute", "stateful_truncated"}:
@@ -30,6 +31,8 @@ class LongContextConfig:
             raise ValueError("chunk and detach intervals must be positive")
         if self.max_context_tokens < 1:
             raise ValueError("max_context_tokens must be positive")
+        if self.cache_device not in {"same", "cpu", "cuda"}:
+            raise ValueError("cache_device must be same, cpu, or cuda")
 
 
 @dataclass
@@ -106,21 +109,22 @@ def run_chunked_forward(
         raise ValueError("input_ids must have shape [B, T]")
     if labels is not None and labels.shape != input_ids.shape:
         raise ValueError("labels must have the same shape as input_ids")
+    if optimizer is not None and cfg.cache_device != "same":
+        raise ValueError(
+            "explicit compressed cache placement is inference-only; "
+            "use cache_device='same' for training"
+        )
     length = int(input_ids.shape[1])
     if length > cfg.max_context_tokens:
         raise ValueError(
             f"requested {length} tokens exceeds configured target {cfg.max_context_tokens}; "
             "select a larger validated context profile"
         )
-    if pixel_values is not None and cfg.mode == "stateful_truncated":
-        # Vision is encoded in the first prefill only.  A caller may still use
-        # full-recompute multimodal chunks, but should not silently re-encode
-        # an image on every detached state segment.
-        pass
-
     if optimizer is not None:
         optimizer.zero_grad(set_to_none=True)
-    cache = KestrelCache()
+    cache = KestrelCache(
+        compressed_device=None if cfg.cache_device == "same" else cfg.cache_device
+    )
     loss_terms: list[tuple[torch.Tensor, int]] = []
     interval_terms: list[tuple[torch.Tensor, int]] = []
     total_loss_value = 0.0
@@ -174,7 +178,8 @@ def run_chunked_forward(
                 chunk_tokens += internal_tokens
             if terms:
                 chunk_loss = torch.stack(terms).sum() / max(1, chunk_tokens)
-                loss_terms.append((chunk_loss, chunk_tokens))
+                if cfg.mode == "full_recompute":
+                    loss_terms.append((chunk_loss, chunk_tokens))
                 interval_terms.append((chunk_loss, chunk_tokens))
                 total_loss_value += float(chunk_loss.detach().cpu()) * chunk_tokens
                 total_tokens += chunk_tokens
@@ -233,6 +238,7 @@ def run_chunked_forward(
             "cache_layers": len(cache.layers),
             "full_logits_collected": collect_logits,
             "cache_memory_bytes": cache_memory,
+            "cache_device": cfg.cache_device,
             "evidence_label": (
                 "full_gradient_training" if optimizer is not None and cfg.mode == "full_recompute"
                 else "stateful_truncated_training" if optimizer is not None

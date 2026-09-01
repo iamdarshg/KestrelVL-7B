@@ -4,16 +4,20 @@ import torch
 from model import KestrelConfig, KestrelForCausalLM
 from model.attention.cache import KestrelCache
 from model.attention.csa import CompressedSparseAttention
+from model.attention.grouped_output import GroupedLowRankOutput
 from model.attention.lightning_indexer import LightningIndexer
 from model.attention.mhc import ManifoldHyperConnection
 from model.attention.rope import PartialRotaryEmbedding
 from model.attention.sliding import sliding_causal_attention
 from model.nemotron import RealNemotronKestrelForCausalLM
-from model.vision.internvit import InternViTEncoder
+from model.vision.internvit import InternViTEncoder, _extract_token_sequence
 from model.vision.projector import AdaptiveVisionProjector
 from release.runtime import Q4Linear, load_q4_runtime
 from release.serialization import load_q4_bundle, save_q4_bundle
 from training.long_context import LongContextConfig, run_chunked_forward
+from model.attention.module import V4FlashAttention
+from model.transplant.svd_init import initialize_attention_from_dense
+from eval.long_context import estimate_cache_memory
 
 
 def positions(length: int) -> torch.Tensor:
@@ -58,6 +62,23 @@ def test_compression_does_not_emit_incomplete_future_group() -> None:
     assert torch.isfinite(out).all()
 
 
+def test_compressed_group_is_visible_at_its_inclusive_causal_endpoint() -> None:
+    torch.manual_seed(101)
+    module = CompressedSparseAttention(1, 1, 4, ratio=2, index_dim=2, topk=1)
+    with torch.no_grad():
+        module.compressor.key_mix.weight.copy_(torch.eye(4))
+        module.compressor.value_mix.weight.copy_(torch.eye(4))
+        module.sink_value.zero_()
+    query = torch.zeros(1, 1, 2, 4)
+    key = torch.zeros(1, 1, 2, 4)
+    value = torch.tensor([[[[1.0, 2.0, 3.0, 4.0], [3.0, 4.0, 5.0, 6.0]]]])
+    output = module(query, key, value, positions(2), positions(2))
+    # The compressed group is timestamped at position 1.  Position 0 still
+    # sees only the sink; position 1 must see the completed group itself.
+    assert torch.allclose(output[0, 0, 0], torch.zeros(4), atol=1e-6)
+    assert torch.allclose(output[0, 0, 1], value[0, 0].mean(dim=0), atol=1e-6)
+
+
 def test_compression_preserves_multiple_kv_streams() -> None:
     torch.manual_seed(11)
     module = CompressedSparseAttention(4, 2, 8, ratio=2, index_dim=4, topk=4)
@@ -98,6 +119,26 @@ def test_mhc_is_doubly_stochastic_and_finite() -> None:
     assert torch.allclose(matrix.sum(-2), torch.ones(2), atol=1e-5)
     base, update = torch.randn(2, 3, 8), torch.randn(2, 3, 8)
     assert torch.isfinite(mhc(base, update)).all()
+
+
+def test_grouped_output_preserves_cross_group_o_projection_components() -> None:
+    torch.manual_seed(102)
+    config = KestrelConfig.tiny(use_vision=False, output_rank=32)
+    attention = V4FlashAttention(config, layer_idx=2)
+    wq = torch.randn(config.num_attention_heads * config.head_dim, config.hidden_size)
+    wk = torch.randn(config.num_key_value_heads * config.head_dim, config.hidden_size)
+    wv = torch.randn(config.num_key_value_heads * config.head_dim, config.hidden_size)
+    wo = torch.randn(config.hidden_size, config.hidden_size)
+    errors = initialize_attention_from_dense(attention, wq, wk, wv, wo, old_kv_heads=1)
+    assert attention.out.up.shape == (
+        config.output_groups,
+        config.output_rank,
+        config.hidden_size,
+    )
+    # Rank 32 is sufficient for each 32-by-64 input-group slice in this tiny
+    # config, so the grouped factorization should reconstruct the complete
+    # dense projection, including its off-diagonal output-group components.
+    assert errors["o_relative_error"] < 1e-5
 
 
 def test_model_prefill_decode_cache_equivalence() -> None:
@@ -148,6 +189,24 @@ def test_cache_keeps_bounded_local_state_and_chunked_compressed_state() -> None:
     assert restored.get(0).key is not None and restored.get(0).key.shape[2] == 4
     assert restored.get(2).compressed_token_count == 10
     assert restored.get(2).index.token_count == 10
+
+
+def test_compressed_cache_can_live_on_cpu_for_long_context_inference() -> None:
+    torch.manual_seed(122)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=4)
+    model = KestrelForCausalLM(config).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 24))
+    cache = KestrelCache(compressed_device="cpu")
+    with torch.inference_mode():
+        offloaded = model(ids, past_key_values=cache).logits
+        for layer_index in (2, 3):
+            layer = cache.get(layer_index)
+            assert layer.compressed.key_chunks
+            assert all(chunk.device.type == "cpu" for chunk in layer.compressed.key_chunks)
+            assert all(chunk.device.type == "cpu" for chunk in layer.compressed.value_chunks)
+            assert all(chunk.device.type == "cpu" for chunk in layer.index.key_chunks)
+        expected = model(ids).logits
+    assert torch.allclose(expected, offloaded, atol=2e-5, rtol=2e-5)
 
 
 def test_bfloat16_index_state_is_reused_without_scales() -> None:
@@ -220,6 +279,39 @@ def test_long_context_chunked_forward_does_not_need_full_logit_buffer() -> None:
     assert result.telemetry["full_logits_collected"] is True
 
 
+def test_chunked_forward_reports_explicit_cpu_cache_policy() -> None:
+    torch.manual_seed(151)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=8)
+    model = KestrelForCausalLM(config).eval()
+    ids = torch.randint(0, config.vocab_size, (1, 24))
+    with torch.inference_mode():
+        result = run_chunked_forward(
+            model,
+            ids,
+            config=LongContextConfig(
+                mode="stateful_truncated",
+                execution_chunk_tokens=5,
+                detach_interval_tokens=10,
+                max_context_tokens=64,
+                cache_device="cpu",
+            ),
+            collect_logits=True,
+        )
+    assert result.telemetry["cache_device"] == "cpu"
+    assert result.telemetry["evidence_label"] == "forward_only_stateful_truncated"
+    assert result.logits is not None and result.logits.shape == (1, 24, config.vocab_size)
+
+
+def test_cache_memory_estimator_is_monotonic_and_does_not_allocate_context() -> None:
+    config = KestrelConfig(use_vision=False)
+    short = estimate_cache_memory(config, 4096)
+    long = estimate_cache_memory(config, 1_048_576)
+    assert long["bytes"]["total"] > short["bytes"]["total"]
+    assert long["context_tokens"] == 1_048_576
+    assert long["includes_model_weights"] is False
+    assert long["includes_peak_activations"] is False
+
+
 def test_q4_bundle_is_pickle_free_and_round_trips(tmp_path) -> None:
     torch.manual_seed(16)
     state = {
@@ -266,6 +358,24 @@ def test_vision_policy_offloads_and_caches_encoded_tokens() -> None:
     second = model.visual_tokens(pixels, context_length=1)
     assert second.shape == first.shape
     assert model.last_vision_telemetry["cache_hit"] is True
+
+
+def test_vision_output_adapter_selects_tipsv2_patch_tokens() -> None:
+    cls = torch.randn(2, 1, 1024)
+    registers = torch.randn(2, 1, 1024)
+    patches = torch.randn(2, 1024, 1024)
+    assert _extract_token_sequence((cls, registers, patches)) is patches
+
+    from types import SimpleNamespace
+
+    nested = SimpleNamespace(
+        image_features=SimpleNamespace(
+            cls_token=cls,
+            register_tokens=registers,
+            patch_tokens=patches,
+        )
+    )
+    assert _extract_token_sequence(nested) is patches
 
 
 def test_real_nemotron_wrapper_grafts_vision_projector_and_cache() -> None:

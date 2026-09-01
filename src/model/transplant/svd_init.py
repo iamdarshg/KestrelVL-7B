@@ -29,21 +29,23 @@ def initialize_attention_from_dense(
     attention.kv.weight[wk_shared.shape[0] :].copy_(wv_shared)
     dense_flat = wo
     # HF linear weights are [out, in], while the grouped output path consumes
-    # row vectors as x @ down @ up.  Factor each diagonal block of wo.T so the
-    # grouped transplant reconstructs the corresponding output subspace.
+    # row vectors as x @ down @ up.  Factor each input-group slice of wo.T.
+    # Every factor maps to the complete output dimension, so cross-group
+    # components of the original dense projection are retained.
     attention.out.up.zero_()
     attention.out.down.zero_()
     groups = attention.config.output_groups
-    out_per = dense_flat.shape[0] // groups
+    if dense_flat.shape[1] % groups:
+        raise ValueError("o_proj input dimension must be divisible by output_groups")
     in_per = dense_flat.shape[1] // groups
     reconstructed = torch.zeros_like(dense_flat)
     for g in range(groups):
-        block_t = dense_flat[g * out_per : (g + 1) * out_per, g * in_per : (g + 1) * in_per].T
+        block_t = dense_flat[:, g * in_per : (g + 1) * in_per].T
         down, up = factor_linear_svd(block_t, attention.config.output_rank)
         rank = down.shape[1]
         attention.out.down[g, :, :rank].copy_(down)
         attention.out.up[g, :rank, :].copy_(up)
-        reconstructed[g * out_per : (g + 1) * out_per, g * in_per : (g + 1) * in_per].copy_((down @ up).T)
+        reconstructed[:, g * in_per : (g + 1) * in_per].copy_((down @ up).T)
     return {
         "q_relative_error": _rel_error(wq.T, q_a @ q_b),
         "o_relative_error": _rel_error(dense_flat, reconstructed),

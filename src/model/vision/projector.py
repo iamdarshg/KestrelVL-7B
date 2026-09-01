@@ -1,4 +1,4 @@
-"""InternViT-to-language adaptive projector."""
+"""Developer-vision-to-language adaptive projector."""
 
 import torch
 from torch import nn
@@ -20,4 +20,3 @@ class AdaptiveVisionProjector(nn.Module):
 
     def forward(self, visual_tokens: torch.Tensor, budget: int | None = None) -> torch.Tensor:
         return self.resampler(self.mlp(self.norm(visual_tokens)), budget)
-

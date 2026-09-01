@@ -33,6 +33,10 @@ long_context_training:
   mode: full_recompute
   execution_chunk_tokens: 8192
   detach_interval_tokens: 8192
+long_context_inference:
+  cache_device: cpu
+  principal_target_tokens: 1048576
+  stretch_target_tokens: 1500000
 language_weights: frozen
 vision_weights: nf4
 trainable_subsets: [new_attention, projector, lora, mhc]

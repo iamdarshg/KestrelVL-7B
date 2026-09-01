@@ -1,4 +1,12 @@
-"""Dynamic 448px tiling and optional InternViT loading hook."""
+"""Dynamic 448px tiling and developer-vision encoder adapters.
+
+The public graft contract is a sequence of patch tokens with shape
+``[batch, tokens, hidden]``.  InternViT and Google's TIPSv2 custom remote-code
+model expose that sequence through different APIs, so this module keeps the
+normalization, output extraction, and long-context offload policy in one
+place.  TIPSv2 is deliberately an opt-in backend until its local weights have
+passed the load and image smoke tests.
+"""
 
 from pathlib import Path
 from typing import Any
@@ -6,6 +14,45 @@ from contextlib import nullcontext
 
 import torch
 from torch import nn
+
+
+def _extract_token_sequence(output: Any) -> torch.Tensor:
+    """Extract patch/spatial tokens from supported vision-model outputs."""
+    if torch.is_tensor(output):
+        if output.ndim != 3:
+            raise TypeError(f"vision tensor must be rank 3, got shape {tuple(output.shape)}")
+        return output
+
+    if isinstance(output, dict):
+        for key in ("patch_tokens", "x_norm_patchtokens", "last_hidden_state"):
+            candidate = output.get(key)
+            if torch.is_tensor(candidate):
+                return candidate
+
+    # TIPSv2's underlying VisionTransformer returns
+    # (class_token, register_tokens, patch_tokens).  Search from the end so
+    # the spatial stream wins over the one-token class stream.
+    if isinstance(output, (tuple, list)):
+        for candidate in reversed(output):
+            if torch.is_tensor(candidate) and candidate.ndim == 3:
+                return candidate
+
+    # TIPSv2 returns TIPSv2Output(image_features=TIPSv2ImageOutput(...)) and
+    # its patch stream is the spatial representation needed by the projector.
+    image_features = getattr(output, "image_features", None)
+    patch_tokens = getattr(image_features, "patch_tokens", None)
+    if torch.is_tensor(patch_tokens):
+        return patch_tokens
+
+    last_hidden_state = getattr(output, "last_hidden_state", None)
+    if torch.is_tensor(last_hidden_state):
+        return last_hidden_state
+    hidden_states = getattr(output, "hidden_states", None)
+    if hidden_states:
+        candidate = hidden_states[-1]
+        if torch.is_tensor(candidate):
+            return candidate
+    raise TypeError("vision encoder output has no patch-token sequence")
 
 
 def dynamic_tiles(image: Any, tile_size: int = 448, max_tiles: int = 16) -> torch.Tensor:
@@ -62,6 +109,7 @@ class InternViTEncoder(nn.Module):
         super().__init__()
         self.model = None
         self.hidden_size = hidden_size
+        self.backend = "tiny"
         if model_path:
             try:
                 from transformers import AutoModel
@@ -75,9 +123,13 @@ class InternViTEncoder(nn.Module):
                 if Path(model_path).is_dir():
                     kwargs["local_files_only"] = True
                 self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
-                self.hidden_size = int(getattr(self.model.config, "hidden_size", hidden_size))
+                config = self.model.config
+                self.backend = str(getattr(config, "model_type", "internvit"))
+                self.hidden_size = int(
+                    getattr(config, "hidden_size", getattr(config, "embed_dim", hidden_size))
+                )
             except Exception as exc:  # pragma: no cover - depends on optional remote code/weights
-                raise RuntimeError(f"could not load InternViT at {model_path}: {exc}") from exc
+                raise RuntimeError(f"could not load vision encoder at {model_path}: {exc}") from exc
         else:
             self.model = TinyVisionEncoder(hidden_size)
         # The public graft API accepts RGB tensors in [0, 1].  InternViT uses
@@ -87,6 +139,11 @@ class InternViTEncoder(nn.Module):
         model_config = getattr(self.model, "config", None)
         mean = getattr(model_config, "image_mean", None)
         std = getattr(model_config, "image_std", None)
+        if self.backend == "tipsv2":
+            # TIPSv2's shipped processor explicitly rescales to [0, 1] and
+            # does not apply channel normalization.
+            mean = [0.0, 0.0, 0.0]
+            std = [1.0, 1.0, 1.0]
         self.register_buffer(
             "pixel_mean",
             torch.tensor(
@@ -108,14 +165,14 @@ class InternViTEncoder(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         pixel_values = (pixel_values - self.pixel_mean.to(pixel_values)) / self.pixel_std.to(pixel_values)
-        output = self.model(pixel_values)
-        if torch.is_tensor(output):
-            return output
-        if hasattr(output, "last_hidden_state"):
-            return output.last_hidden_state
-        if hasattr(output, "hidden_states") and output.hidden_states:
-            return output.hidden_states[-1]
-        raise TypeError("vision encoder output has no token sequence")
+        if self.backend == "tipsv2" and hasattr(self.model, "vision_encoder"):
+            # TIPSv2's public encode_image method is decorated with
+            # ``torch.no_grad``.  Calling the underlying ViT preserves the
+            # staged-unfreezing contract for last4/upper12/all training.
+            output = self.model.vision_encoder(pixel_values)
+        else:
+            output = self.model(pixel_values)
+        return _extract_token_sequence(output)
 
     def encode_with_policy(
         self,

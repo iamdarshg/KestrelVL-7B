@@ -1,7 +1,10 @@
 name: kestrel-nemotron-v1-graft
 license: AGPL-3.0-only
 base_model: nvidia/OpenReasoning-Nemotron-7B
+# InternViT remains the original graft reference.  TIPSv2 L/14 is the
+# selectable alternative after its local weight and image smoke gates pass.
 vision_model: OpenGVLab/InternViT-300M-448px-V2_5
+vision_model_alternative: google/tipsv2-l14
 
 # The BERT screen selected the local+mHC interaction.  In the causal model,
 # local attention is the first branch of the V4-style schedule rather than a

@@ -172,11 +172,15 @@ def _load_streaming_skeleton(
 
 
 def _find_vision_blocks(model: nn.Module) -> list[nn.Module] | None:
-    """Find InternViT transformer blocks across supported remote-code layouts."""
+    """Find transformer blocks across InternViT and TIPSv2 layouts."""
     candidates: list[Any] = [model]
-    encoder = getattr(model, "encoder", None)
-    if encoder is not None:
-        candidates.append(encoder)
+    for owner_name in ("encoder", "vision_encoder", "vision_model"):
+        owner = getattr(model, owner_name, None)
+        if owner is not None:
+            candidates.append(owner)
+            nested = getattr(owner, "encoder", None)
+            if nested is not None:
+                candidates.append(nested)
     for candidate in candidates:
         for name in ("layers", "blocks"):
             blocks = getattr(candidate, name, None)
@@ -304,14 +308,14 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                     parameter.requires_grad_(True)
 
     def set_vision_trainable(self, stage: str = "projector") -> None:
-        """Select the staged InternViT graft update scope.
+        """Select the staged vision graft update scope.
 
         The language body and new attention remain controlled by
         :meth:`freeze_backbone`.  This method only controls the vision graft:
         ``projector`` is the safe initial phase, while ``last4`` and
         ``upper12`` progressively unfreeze ViT blocks.  The block discovery is
-        deliberately tolerant of the two layouts used by InternViT remote
-        code (``encoder.layers`` and ``blocks``).
+        deliberately tolerant of the layouts used by InternViT and TIPSv2
+        remote code (nested ``vision_encoder.blocks``/``encoder.layers``).
         """
         if stage not in {"none", "projector", "last4", "upper12", "all"}:
             raise ValueError("vision stage must be none, projector, last4, upper12, or all")
@@ -368,7 +372,7 @@ class RealNemotronKestrelForCausalLM(nn.Module):
     ) -> torch.Tensor:
         """Encode an image once and project it into the Nemotron stream.
 
-        A frozen InternViT is moved to CPU for very long prompts, encoded once,
+        A frozen vision encoder is moved to CPU for very long prompts, encoded once,
         and its output is cached on CPU.  The projector remains on the language
         device, so long-context chunks do not repeatedly shuttle the ViT or
         duplicate visual tokens.
@@ -446,7 +450,38 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                         continue
                     missing.append(name)
                 else:
-                    parameter.data.copy_(state[name].to(parameter.device, parameter.dtype))
+                    value = state[name]
+                    if tuple(value.shape) != tuple(parameter.shape):
+                        # Checkpoints created before the cross-group output
+                        # fix stored ``up`` as [groups, rank, group_dim].
+                        # Embed those diagonal slices into the new full
+                        # output map so old attention-recovery checkpoints
+                        # remain resumable without silently reshaping data.
+                        if (
+                            name.endswith(".attention.out.up")
+                            and value.ndim == 3
+                            and parameter.ndim == 3
+                            and value.shape[:2] == parameter.shape[:2]
+                            and parameter.shape[2] == self.config.hidden_size
+                            and value.shape[2] * self.config.output_groups == parameter.shape[2]
+                        ):
+                            expanded = torch.zeros_like(parameter, device=parameter.device)
+                            group_dim = value.shape[2]
+                            for group in range(self.config.output_groups):
+                                start = group * group_dim
+                                stop = min(start + group_dim, expanded.shape[2])
+                                expanded[group, :, start:stop].copy_(
+                                    value[group, :, : stop - start].to(
+                                        parameter.device, parameter.dtype
+                                    )
+                                )
+                            parameter.data.copy_(expanded)
+                            continue
+                        raise ValueError(
+                            f"checkpoint tensor shape mismatch for {name}: "
+                            f"{tuple(value.shape)} != {tuple(parameter.shape)}"
+                        )
+                    parameter.data.copy_(value.to(parameter.device, parameter.dtype))
         if missing:
             raise KeyError(f"checkpoint is missing trainable parameters, first={missing[:3]}")
 

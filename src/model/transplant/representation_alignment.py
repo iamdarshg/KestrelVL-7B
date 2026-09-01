@@ -18,12 +18,35 @@ def representation_loss(student: torch.Tensor, teacher: torch.Tensor, kind: str 
     raise ValueError(f"unknown representation loss {kind}")
 
 
-def distillation_loss(student_logits: torch.Tensor, teacher_logits: torch.Tensor, temperature: float = 1.0, direction: str = "forward") -> torch.Tensor:
+def distillation_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    temperature: float = 1.0,
+    direction: str = "forward",
+) -> torch.Tensor:
+    """Token-normalized KL divergence for causal recovery.
+
+    ``reduction='batchmean'`` is correct for a single distribution per batch,
+    but it scales a sequence-shaped tensor by the batch size only.  Recovery
+    batches have thousands of token distributions, so that reduction makes
+    the KL weight depend on sequence length.  Sum over vocabulary and average
+    over every remaining distribution instead.
+    """
+    if student_logits.shape != teacher_logits.shape:
+        raise ValueError(f"shape mismatch: {student_logits.shape} != {teacher_logits.shape}")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
     s = student_logits.float() / temperature
     t = teacher_logits.float() / temperature
+    token_shape = s.shape[:-1]
     if direction == "forward":
-        return F.kl_div(F.log_softmax(s, dim=-1), F.softmax(t, dim=-1), reduction="batchmean") * temperature**2
+        values = F.kl_div(
+            F.log_softmax(s, dim=-1), F.softmax(t, dim=-1), reduction="none"
+        ).sum(dim=-1)
+        return values.reshape(-1).mean() * temperature**2
     if direction == "reverse":
-        return F.kl_div(F.log_softmax(t, dim=-1), F.softmax(s, dim=-1), reduction="batchmean") * temperature**2
+        values = F.kl_div(
+            F.log_softmax(t, dim=-1), F.softmax(s, dim=-1), reduction="none"
+        ).sum(dim=-1)
+        return values.reshape(-1).mean() * temperature**2
     raise ValueError("direction must be forward or reverse")
-

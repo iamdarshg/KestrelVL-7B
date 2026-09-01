@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "references/openreasoning_nemotron_7b_config.json",
     "references/internvit_300m_448_v2_5_config.json",
+    "references/tipsv2_l14_config.json",
     "references/deepseek_v4_flash_base_config.json",
 ]
 
@@ -24,4 +25,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

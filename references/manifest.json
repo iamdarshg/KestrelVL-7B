@@ -1,10 +1,42 @@
 {
-  "retrieved_at": "2026-08-31",
+  "retrieved_at": "2026-09-01",
   "sources": {
-    "language": {"repo":"nvidia/OpenReasoning-Nemotron-7B", "revision":"main", "path":"config.json", "local_copy":"openreasoning_nemotron_7b_config.json"},
-    "vision": {"repo":"OpenGVLab/InternViT-300M-448px-V2_5", "revision":"main", "path":"config.json", "local_copy":"internvit_300m_448_v2_5_config.json"},
-    "attention_reference": {"repo":"deepseek-ai/DeepSeek-V4-Flash-Base", "revision":"main", "path":"config.json", "local_copy":"deepseek_v4_flash_base_config.json"},
-    "bert_ablation_target": {"repo":"google-bert/bert-base-uncased", "revision":"main", "path":"config.json", "local_copy":"bert_base_uncased_config.json"}
+    "language": {
+      "repo": "nvidia/OpenReasoning-Nemotron-7B",
+      "revision": "main",
+      "path": "config.json",
+      "local_copy": "openreasoning_nemotron_7b_config.json"
+    },
+    "vision": {
+      "repo": "OpenGVLab/InternViT-300M-448px-V2_5",
+      "revision": "main",
+      "path": "config.json",
+      "local_copy": "internvit_300m_448_v2_5_config.json"
+    },
+    "vision_alternative": {
+      "repo": "google/tipsv2-l14",
+      "revision": "main",
+      "commit": "52847a71eb02a3082c370fbcd98cd799687bd4d0",
+      "path": "config.json",
+      "local_copy": "tipsv2_l14_config.json"
+    },
+    "attention_reference": {
+      "repo": "deepseek-ai/DeepSeek-V4-Flash-Base",
+      "revision": "main",
+      "path": "config.json",
+      "local_copy": "deepseek_v4_flash_base_config.json"
+    },
+    "bert_ablation_target": {
+      "repo": "google-bert/bert-base-uncased",
+      "revision": "main",
+      "path": "config.json",
+      "local_copy": "bert_base_uncased_config.json"
+    }
   },
-  "sha256": "filled_by_scripts/verify_references.py"
+  "sha256": {
+    "references/openreasoning_nemotron_7b_config.json": "a8fe744256a4d43969edf32e621938a6ea18bacbe31eab37e4633cb5ca55e85e",
+    "references/internvit_300m_448_v2_5_config.json": "873fa6bf69a0e9df87dfdcf4058d3a3806cc478cea6b777f3f1328dabcf614a6",
+    "references/tipsv2_l14_config.json": "cfdacd483ecc03b9d05e933bf3e7feea4d0256202756a8adb85260aba19e8ee0",
+    "references/deepseek_v4_flash_base_config.json": "d15c87d9830850c7c23aaafde7e9cde6924541130eb7912096d5bda74a6fc9fe"
+  }
 }

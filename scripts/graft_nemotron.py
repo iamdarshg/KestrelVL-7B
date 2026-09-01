@@ -29,8 +29,19 @@ def _default_model_id() -> str:
 
 
 def _default_vision_id() -> str | None:
-    local = ROOT / "data/raw/internvit"
-    return str(local) if (local / "config.json").exists() else None
+    # Prefer a complete local artifact.  A config-only or interrupted download
+    # must not make the default command fail later during model construction.
+    candidates = (
+        ROOT / "data/raw/internvit",
+        ROOT / "data/raw/tipsv2-l14",
+    )
+    for local in candidates:
+        if (local / "config.json").exists() and (
+            (local / "model.safetensors").exists()
+            or (local / "model.safetensors.index.json").exists()
+        ):
+            return str(local)
+    return None
 
 
 def _pixels(path: str) -> torch.Tensor:
@@ -67,8 +78,9 @@ def main() -> None:
     use_vision = not args.without_vision
     if use_vision and not args.vision_model_id:
         raise SystemExit(
-            "InternViT weights are not present. Run scripts/download_internvit.py "
-            "or pass --without-vision for the attention-only graft."
+            "No complete local vision checkpoint is present. Run the InternViT "
+            "or TIPSv2 downloader, pass --vision-model-id, or use --without-vision "
+            "for the attention-only graft."
         )
     if args.stage is None:
         args.stage = "vision_projector" if use_vision else "attention_initialized"

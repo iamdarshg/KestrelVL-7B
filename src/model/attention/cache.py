@@ -279,6 +279,11 @@ class LayerCache:
 @dataclass
 class KestrelCache:
     layers: dict[int, LayerCache] = field(default_factory=dict)
+    # ``None`` keeps compressed history beside the active query.  ``"cpu"``
+    # is an explicit inference-time policy for million-token contexts: local
+    # K/V stays on the accelerator while compressed K/V and the index live in
+    # host RAM and are transferred a candidate chunk at a time.
+    compressed_device: str | None = None
 
     def get(self, layer_idx: int) -> LayerCache:
         return self.layers.setdefault(layer_idx, LayerCache())
@@ -297,6 +302,33 @@ class KestrelCache:
         index_dtype: str | None = None,
         local_window: int | None = None,
     ) -> None:
+        if self.compressed_device is not None and compressed_key is not None:
+            if self.compressed_device not in {"cpu", "cuda"}:
+                raise ValueError("compressed_device must be None, cpu, or cuda")
+            compressed_tensors = (
+                compressed_key,
+                compressed_value,
+                compressed_positions,
+                index_key,
+                index_scale,
+            )
+            if torch.is_grad_enabled() and any(
+                tensor is not None and tensor.requires_grad for tensor in compressed_tensors
+            ):
+                raise RuntimeError(
+                    "compressed CPU/CUDA cache offload is inference-only; "
+                    "use cache_device='same' for gradient training"
+                )
+            storage = torch.device(self.compressed_device)
+            compressed_key = compressed_key.detach().to(storage, non_blocking=True)
+            if compressed_value is not None:
+                compressed_value = compressed_value.detach().to(storage, non_blocking=True)
+            if compressed_positions is not None:
+                compressed_positions = compressed_positions.detach().to(storage, non_blocking=True)
+            if index_key is not None:
+                index_key = index_key.detach().to(storage, non_blocking=True)
+            if index_scale is not None:
+                index_scale = index_scale.detach().to(storage, non_blocking=True)
         self.get(layer_idx).append(
             key,
             value,

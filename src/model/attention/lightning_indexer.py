@@ -133,8 +133,15 @@ class LightningIndexer(nn.Module):
                     raise ValueError("key position chunk has incompatible shape")
                 for substart in range(0, full_m, self.candidate_chunk_size):
                     substop = min(full_m, substart + self.candidate_chunk_size)
-                    key = full_key[:, substart:substop]
-                    key_positions = full_key_positions[:, substart:substop]
+                    # Compressed history may intentionally reside in host
+                    # RAM for 1M-token inference.  Move only this bounded
+                    # candidate chunk, never the complete history.
+                    key = full_key[:, substart:substop].to(
+                        block_query.device, non_blocking=True
+                    )
+                    key_positions = full_key_positions[:, substart:substop].to(
+                        block_query.device, non_blocking=True
+                    )
                     m = key.shape[1]
                     if projected_key_chunks is None:
                         projected_key = self.key(key).view(b, m, h, self.index_dim).permute(0, 2, 1, 3)
@@ -142,13 +149,24 @@ class LightningIndexer(nn.Module):
                         projected_key = projected_key_chunks[chunk_index][:, :, substart:substop]
                         scale = projected_key_scales[chunk_index]
                         if projected_key.dtype.is_floating_point:
-                            projected_key = projected_key.to(block_query.dtype)
+                            projected_key = projected_key.to(
+                                device=block_query.device, dtype=block_query.dtype, non_blocking=True
+                            )
                         else:
                             if scale is None:
                                 raise ValueError("integer projected keys require scales")
-                            projected_key = (projected_key.float() * scale.float()).to(block_query.dtype)
+                            projected_key = (
+                                projected_key.to(block_query.device, non_blocking=True).float()
+                                * scale.to(block_query.device, non_blocking=True).float()
+                            ).to(block_query.dtype)
                     scores = torch.einsum("bhqd,bhmd->bhqm", block_query, projected_key) * self.scale
-                    allowed = key_positions[:, None, None, :] < block_positions[:, None, :, None]
+                    # Compression groups are timestamped at their final
+                    # member.  A query at that exact position is allowed to
+                    # consume the group: this is the compressed equivalent
+                    # of the local branch's inclusive causal comparison.
+                    # Strict ``<`` would make every group-end token miss its
+                    # own completed group during both prefill and decode.
+                    allowed = key_positions[:, None, None, :] <= block_positions[:, None, :, None]
                     allowed = allowed.expand(-1, h, -1, -1)
                     scores = scores.masked_fill(~allowed, float("-inf"))
                     local_k = min(self.topk, m)
