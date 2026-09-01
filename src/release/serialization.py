@@ -156,6 +156,12 @@ def save_q4_bundle(
 def load_q4_bundle(path: str | Path, device: str | torch.device = "cpu") -> dict[str, torch.Tensor]:
     """Load and dequantize a release without executing pickle."""
     root = Path(path)
+    checksum_path = root / "checksums.json"
+    if checksum_path.exists():
+        checksums = json.loads(checksum_path.read_text(encoding="utf-8"))
+        observed = hashlib.sha256((root / "model.safetensors").read_bytes()).hexdigest()
+        if checksums.get("model.safetensors") != observed:
+            raise ValueError("model.safetensors checksum mismatch")
     manifest = json.loads((root / "quantization_config.json").read_text(encoding="utf-8"))
     tensors = load_file(str(root / "model.safetensors"), device=str(device))
     result: dict[str, torch.Tensor] = {}
