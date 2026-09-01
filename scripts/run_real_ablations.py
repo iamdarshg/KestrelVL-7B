@@ -245,7 +245,6 @@ def run_option(
             allow_fp32_master=False,
         ),
     )
-    optimizer_report = optimizer_telemetry(optimizer)
     per_candidate = args.total_tokens // len(OPTIONS)
     validation_tokens = min(args.validation_tokens, per_candidate // 4)
     train_tokens = per_candidate - validation_tokens
@@ -395,7 +394,7 @@ def run_option(
         "optimizer_snapshot_retained": True,
         "load_info": load_info.__dict__,
         "precision": precision_report,
-        "optimizer": optimizer_report,
+        "optimizer": optimizer_telemetry(optimizer),
     }
     del optimizer, model
     gc.collect()

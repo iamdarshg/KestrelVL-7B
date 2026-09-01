@@ -6,9 +6,11 @@ import torch
 
 
 def snapshot(device: torch.device | str = "cuda") -> dict[str, object]:
-    result: dict[str, object] = {"time": time.time(), "device": str(device), "cuda": torch.cuda.is_available()}
-    if torch.cuda.is_available():
-        index = torch.device(device).index or torch.cuda.current_device()
+    target = torch.device(device)
+    cuda_target = target.type == "cuda" and torch.cuda.is_available()
+    result: dict[str, object] = {"time": time.time(), "device": str(target), "cuda": cuda_target}
+    if cuda_target:
+        index = target.index if target.index is not None else torch.cuda.current_device()
         result.update({"name": torch.cuda.get_device_name(index), "allocated_bytes": torch.cuda.memory_allocated(index), "reserved_bytes": torch.cuda.memory_reserved(index), "peak_bytes": torch.cuda.max_memory_allocated(index), "total_bytes": torch.cuda.get_device_properties(index).total_memory})
     return result
 
@@ -26,4 +28,3 @@ def append_jsonl(path: str | Path, record: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
-
