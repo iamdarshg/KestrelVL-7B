@@ -72,8 +72,8 @@ class KestrelConfig:
             raise ValueError("attention_output_scale_init must be non-negative")
         if self.index_topk < 1 or self.candidate_chunk_size < 1 or self.retrieval_chunk_size < 1:
             raise ValueError("retrieval sizes must be positive")
-        if self.index_dtype not in {"int8", "int16", "int32", "int64"}:
-            raise ValueError("index_dtype must be an explicitly supported integer dtype")
+        if self.index_dtype not in {"int8", "int16", "int32", "int64", "bfloat16"}:
+            raise ValueError("index_dtype must be bfloat16 or an explicitly supported integer dtype")
 
     @property
     def rotary_dim(self) -> int:

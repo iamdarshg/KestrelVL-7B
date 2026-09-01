@@ -147,6 +147,21 @@ def test_cache_keeps_bounded_local_state_and_chunked_compressed_state() -> None:
     assert restored.get(2).index.token_count == 10
 
 
+def test_bfloat16_index_state_is_reused_without_scales() -> None:
+    torch.manual_seed(121)
+    config = KestrelConfig.tiny(use_vision=False, index_dtype="bfloat16", sliding_window=4)
+    model = KestrelForCausalLM(config).eval()
+    cache = KestrelCache()
+    ids = torch.randint(0, config.vocab_size, (1, 24))
+    with torch.inference_mode():
+        model(ids, past_key_values=cache)
+    index = cache.get(2).index
+    assert index.dtype == "bfloat16"
+    assert index.key_chunks and all(chunk.dtype == torch.bfloat16 for chunk in index.key_chunks)
+    assert all(scale is None for scale in index.scale_chunks)
+    assert index.memory_bytes > 0
+
+
 def test_chunked_indexer_matches_eager_topk() -> None:
     torch.manual_seed(13)
     indexer = LightningIndexer(8, 2, 4, topk=4, candidate_chunk_size=2)
