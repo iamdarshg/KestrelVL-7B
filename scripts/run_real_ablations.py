@@ -231,6 +231,17 @@ def run_option(
         interval_steps=args.checkpoint_interval,
         max_checkpoints=args.max_checkpoints,
         durable_uri=args.durable_checkpoint_uri,
+        checkpoint_metadata={
+            "config": config.to_dict(),
+            "model_id": args.model_id,
+            "revision": args.revision,
+            "ablation_option": option,
+            "protocol": {
+                "global_token_budget": args.total_tokens,
+                "sequence_length": args.sequence_length,
+                "compute_dtype": str(compute_dtype),
+            },
+        },
     )
     optimizer = build_muon_optimizer(
         model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, weight_decay=args.weight_decay

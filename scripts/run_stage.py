@@ -40,7 +40,11 @@ def main() -> None:
             raise SystemExit(f"refusing {args.stage}: missing {gate}; complete measured recovery first")
     config = KestrelConfig.tiny(use_vision=False)
     model = KestrelForCausalLM(config)
-    manager = SafeCheckpointManager(ROOT / args.output_root / f"{STAGES.index(args.stage):02d}_{args.stage}", interval_steps=25)
+    manager = SafeCheckpointManager(
+        ROOT / args.output_root / f"{STAGES.index(args.stage):02d}_{args.stage}",
+        interval_steps=25,
+        checkpoint_metadata={"config": config.to_dict(), "stage": args.stage},
+    )
     if args.resume:
         manager.load(args.resume, model)
     ids = torch.randint(0, config.vocab_size, (1, 8))

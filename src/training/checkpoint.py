@@ -1,6 +1,7 @@
 """Atomic, resumable checkpoint state including RNG and dataset cursor."""
 
 import json
+import hashlib
 import os
 import random
 import signal
@@ -166,6 +167,25 @@ def _safe_tensor_name(prefix: str, *parts: object) -> str:
     return prefix + "__" + "__".join(str(part).replace(".", "_") for part in parts)
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_checkpoint_checksums(path: Path) -> None:
+    checksum_path = path / "checksums.json"
+    if not checksum_path.exists():
+        return
+    checksums = json.loads(checksum_path.read_text(encoding="utf-8"))
+    for name, expected in checksums.items():
+        artifact = path / name
+        if not artifact.is_file() or _file_sha256(artifact) != expected:
+            raise ValueError(f"checkpoint checksum mismatch: {name}")
+
+
 class SafeCheckpointManager(CheckpointManager):
     """Safetensors/JSON resume checkpoints for production training.
 
@@ -176,9 +196,16 @@ class SafeCheckpointManager(CheckpointManager):
     No release or resume path needs pickle deserialization.
     """
 
-    def __init__(self, *args: Any, durable_uri: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *args: Any,
+        durable_uri: str | None = None,
+        checkpoint_metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.durable_uri = durable_uri
+        self.checkpoint_metadata = dict(checkpoint_metadata or {})
 
     def save(
         self,
@@ -260,6 +287,46 @@ class SafeCheckpointManager(CheckpointManager):
                 + "\n",
                 encoding="utf-8",
             )
+            metadata = _json_safe(self.checkpoint_metadata)
+            if "git_commit" not in metadata:
+                try:
+                    metadata["git_commit"] = subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+                    ).strip()
+                except (OSError, subprocess.CalledProcessError):
+                    metadata["git_commit"] = None
+            config = metadata.get("config", {})
+            if not isinstance(config, dict):
+                raise TypeError("checkpoint metadata config must be a JSON object")
+            (temporary / "config.json").write_text(
+                json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            artifact_names = sorted(
+                file.name
+                for file in temporary.iterdir()
+                if file.is_file() and file.name not in {"checksums.json", "manifest.json"}
+            )
+            checksums = {name: _file_sha256(temporary / name) for name in artifact_names}
+            (temporary / "checksums.json").write_text(
+                json.dumps(checksums, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            (temporary / "manifest.json").write_text(
+                json.dumps(
+                    {
+                        "format": "kestrel-resume-v1",
+                        "step": step,
+                        "files": artifact_names + ["checksums.json", "manifest.json"],
+                        "metadata": metadata,
+                        "dataset_state": dataset_state or {},
+                        "metrics": metrics or {},
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         except BaseException:
             shutil.rmtree(temporary, ignore_errors=True)
             raise
@@ -291,6 +358,7 @@ class SafeCheckpointManager(CheckpointManager):
         scheduler: Any = None,
     ) -> dict[str, Any]:
         path = Path(path)
+        _verify_checkpoint_checksums(path)
         state = json.loads((path / "state.json").read_text(encoding="utf-8"))
         model_tensors = load_file(str(path / "model.safetensors"), device="cpu")
         model_state = {name: model_tensors[safe] for name, safe in state["model_names"].items()}

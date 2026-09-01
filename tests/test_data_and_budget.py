@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 import torch
 
 from data.corpus import CompositionLockedCorpus, CorpusSpec
@@ -99,6 +100,9 @@ def test_safe_checkpoint_round_trip_has_no_pickle_files(tmp_path: Path) -> None:
     )
     assert (checkpoint / "model.safetensors").exists()
     assert (checkpoint / "optimizer.safetensors").exists()
+    assert (checkpoint / "manifest.json").exists()
+    assert (checkpoint / "config.json").exists()
+    assert (checkpoint / "checksums.json").exists()
     assert not list(checkpoint.glob("*.pt"))
 
     restored_model = torch.nn.Sequential(torch.nn.Linear(4, 8), torch.nn.Linear(8, 2))
@@ -107,3 +111,11 @@ def test_safe_checkpoint_round_trip_has_no_pickle_files(tmp_path: Path) -> None:
     assert state["step"] == 7
     for left, right in zip(model.parameters(), restored_model.parameters()):
         assert torch.equal(left, right)
+
+    model_bytes = (checkpoint / "model.safetensors").read_bytes()
+    try:
+        (checkpoint / "model.safetensors").write_bytes(model_bytes + b"corruption")
+        with pytest.raises(ValueError, match="checksum mismatch"):
+            manager.load(checkpoint, restored_model)
+    finally:
+        (checkpoint / "model.safetensors").write_bytes(model_bytes)
