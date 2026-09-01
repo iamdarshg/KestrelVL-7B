@@ -175,11 +175,11 @@ def run_option(
         compute_dtype=torch.float16,
         skip_svd_initialization=bool(
             args.init_cache
-            and option_index in (1, 3)
+            and option_index in (0, 1, 3)
             and Path(args.init_cache).exists()
         ),
     )
-    if args.init_cache and option_index in (1, 3) and Path(args.init_cache).exists():
+    if args.init_cache and option_index in (0, 1, 3) and Path(args.init_cache).exists():
         cached_state = torch.load(args.init_cache, map_location="cpu", weights_only=False)
         model.load_trainable_state_dict(cached_state)
         # Older interrupted attempts may have been cached before the opening
@@ -382,7 +382,7 @@ def main() -> None:
     parser.add_argument(
         "--init-cache",
         default=None,
-        help="optional CPU state cache; candidates 2 and 4 reuse candidate 1 SVD factors",
+        help="optional state cache; all one-KV candidates reuse the same SVD factors",
     )
     parser.add_argument("--output", default="reports/ablations/real_ablation_results.json")
     parser.add_argument(
