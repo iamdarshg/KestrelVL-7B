@@ -172,7 +172,9 @@ ablation. The original real-Nemotron screen remains available through
 For a short real-model GCP throughput measurement, run the following on a
 single-L4 guest after the model artifacts are present. It uses a synthetic
 token stream, keeps the per-device microbatch at one, and writes VRAM,
-tokens/sec, GPU-hours, and estimated cost to JSON:
+tokens/sec, GPU-hours, and estimated cost to JSON. The selected smoke and
+throughput profile carries a hard `$1.00` miscellaneous-expense cap; no GCP
+job is started by the repository or this command:
 
 ```bash
 bash scripts/run_gcp_throughput.sh --profile configs/hardware/gcp_single_l4.yaml \
@@ -200,6 +202,18 @@ head is excluded; they are architecture/optimizer throughput measurements,
 not language-quality or end-to-end training claims. Add
 `--vision-model-id data/raw/tipsv2-l14` for a separate multimodal prefill
 measurement after the real graft smoke passes.
+
+Before any authorized GCP invocation, run the local-only gate:
+
+```powershell
+python scripts/preflight_gcp.py
+```
+
+The GCP harness refuses to run without the resulting passing report and an
+explicit `--confirm-local-preflight` flag. This is a validation guard, not a
+cloud budget authorization; a human must still approve the exact GCP command
+and dollar budget. The current single-L4 profile records `$1.00` as the
+miscellaneous smoke/throughput ceiling.
 
 ## Reproducible stages
 

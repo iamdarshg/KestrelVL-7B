@@ -39,7 +39,8 @@ long_context_training:
 sequence_length: 8192
 gradient_checkpointing: true
 spot: true
-max_budget_usd: 30
+max_budget_usd: 1
+misc_budget_usd: 1
 estimated_spot_usd_per_node_hour: 0.60
 checkpoint_interval_steps: 100
 durable_checkpoint_uri: null

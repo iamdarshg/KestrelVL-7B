@@ -121,6 +121,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=20260902)
     parser.add_argument("--no-4bit", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--confirm-local-preflight", action="store_true")
     args = parser.parse_args()
 
     profile_path = Path(args.profile)
@@ -138,6 +139,17 @@ def main() -> None:
     if args.dry_run:
         _dry_run(profile_path, profile, args)
         return
+    if not args.confirm_local_preflight:
+        raise SystemExit(
+            "refusing GCP throughput: pass --confirm-local-preflight after "
+            "scripts/preflight_gcp.py passes and a human authorizes the run"
+        )
+    preflight_path = ROOT / "reports/gcp/local_preflight.json"
+    if not preflight_path.is_file():
+        raise SystemExit(f"refusing GCP throughput: missing local preflight {preflight_path}")
+    preflight = json.loads(preflight_path.read_text(encoding="utf-8"))
+    if preflight.get("status") != "pass" or preflight.get("gcp_authorized"):
+        raise SystemExit("refusing GCP throughput: local preflight is not a clean, unauthorised pass")
 
     expected_world_size = (
         int(profile.get("accelerator_count", 1))
