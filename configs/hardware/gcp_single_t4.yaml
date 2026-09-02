@@ -1,0 +1,38 @@
+name: gcp_single_t4
+purpose: bounded_real_nemotron_ablation_attempt
+machine_type: n1-standard-4
+accelerator: nvidia-tesla-t4
+accelerator_count: 1
+distributed: single_gpu
+per_device_micro_batch_size: 1
+gradient_accumulation_steps: 1
+precision: float16
+quantization: nf4
+forward_weight_storage: q4
+compute_dtype: float16
+master_weight_dtype: float16
+gradient_dtype: float16
+allow_fp32_master: false
+optimizer: muon
+muon_momentum_dtype: float16
+adamw_fallback: small_vectors_only
+attention:
+  sliding_window: 128
+  csa_compression_ratio: 4
+  hca_compression_ratio: 128
+  index_topk: 256
+  index_dtype: int8
+  compressed_kv_dtype: float16
+  index_head_dim: 64
+  candidate_chunk_size: 64
+  retrieval_chunk_size: 512
+  block_size: 512
+sequence_length: 1024
+gradient_checkpointing: true
+total_ablation_tokens: 10000000
+tokens_per_candidate: 2500000
+max_runtime_minutes: 16
+max_budget_usd: 0.20
+spot: false
+image_family: pytorch-2-9-cu129-ubuntu-2204-nvidia-580
+zone: asia-south1-a

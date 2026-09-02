@@ -1,0 +1,45 @@
+{
+  "status": "blocked_before_training",
+  "date": "2026-09-03",
+  "project": "project-ba289c9c-3c25-4e15-9dc",
+  "instance": "kestrel-t4-ablation-20260903-4",
+  "zone": "asia-east1-c",
+  "provisioning_model": "SPOT",
+  "machine_type": "n1-standard-4",
+  "accelerator": "nvidia-tesla-t4",
+  "repository_commit": "28a4ede",
+  "model_id": "nvidia/OpenReasoning-Nemotron-7B",
+  "global_token_budget": 10000000,
+  "candidate_count": 4,
+  "tokens_per_candidate": 2500000,
+  "actual_train_tokens": 0,
+  "actual_validation_tokens": 0,
+  "candidate_reached": "target_mhc_topk512",
+  "progress": {
+    "vm_allocation": "success",
+    "cuda_runtime": "success: torch 2.9.1+cu129, CUDA available",
+    "gpu_check": "success: Tesla T4, 15360 MiB, driver 580.173.02",
+    "repository_clone": "success",
+    "dependency_setup": "manual runtime dependency install succeeded; editable install was incompatible with the image build environment",
+    "model_download": "success: approximately 15 GiB Hugging Face cache",
+    "model_load": "partial: 204/339 weight tensors observed before timeout",
+    "forward_backward": "not reached",
+    "ablation_scores": "not produced"
+  },
+  "failures_repaired_in_run": [
+    "image had no python alias: used python3",
+    "root-owned /opt/huggingface cache: moved cache to user home",
+    "incompatible image torchaudio binary: removed torchaudio from disposable VM"
+  ],
+  "budget_control": {
+    "authorized_budget_usd": 0.20,
+    "hard_deadline_seconds_after_create": 900,
+    "training_process_timeout_seconds": 150,
+    "vm_deleted": true,
+    "vm_final_state": "NOT_FOUND",
+    "boot_disk_left_behind": false,
+    "cost_note": "No billing export was available during the run; Spot pricing is dynamic. The VM was deleted after the bounded attempt and no ongoing resource remains."
+  },
+  "evidence_log": "reports/ablations/gcp_t4_ablation.log",
+  "interpretation": "This is an infrastructure/budget attempt, not a model-quality ablation result. The real Nemotron checkpoint was used; no candidate may be selected from this run."
+}
