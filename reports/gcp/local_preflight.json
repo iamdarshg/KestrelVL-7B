@@ -1,0 +1,112 @@
+{
+  "status": "fail",
+  "local_only": true,
+  "generated_at": 1788359924.3282225,
+  "git_commit": "ddb75ec0c7aca90eb9dc522245fa2f6baca14f34",
+  "gates": [
+    {
+      "name": "local_artifacts",
+      "passed": true,
+      "missing": []
+    },
+    {
+      "name": "pytest",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 21.93767570000091,
+      "passed": true,
+      "stdout_tail": ".....................................                                    [100%]\n37 passed in 16.66s\n"
+    },
+    {
+      "name": "compileall",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "-m",
+        "compileall",
+        "-q",
+        "src",
+        "scripts",
+        "tests"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.6679659000001266,
+      "passed": true
+    },
+    {
+      "name": "ruff_new_paths",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "scripts/benchmark_gcp_throughput.py",
+        "src/model/vision/internvit.py",
+        "tests/test_attention.py",
+        "--output-format",
+        "concise"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 0.5267765000007785,
+      "passed": true,
+      "stdout_tail": "All checks passed!\n"
+    },
+    {
+      "name": "single_l4_profile_dry_run",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "scripts/benchmark_gcp_throughput.py",
+        "--profile",
+        "configs/hardware/gcp_single_l4.yaml",
+        "--dry-run"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 7.1726094000005105,
+      "passed": true,
+      "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_single_l4.yaml\",\n  \"name\": \"gcp_single_l4\",\n  \"machine_type\": \"g2-standard-12\",\n  \"accelerator\": \"nvidia-l4\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 8192,\n  \"gradient_accumulation_steps\": 1,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
+    },
+    {
+      "name": "final_rtx_pro_6000_profile_dry_run",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "scripts/benchmark_gcp_throughput.py",
+        "--profile",
+        "configs/hardware/gcp_final_rtx_pro_6000.yaml",
+        "--dry-run"
+      ],
+      "returncode": 0,
+      "elapsed_seconds": 6.034021399998892,
+      "passed": true,
+      "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_final_rtx_pro_6000.yaml\",\n  \"name\": \"gcp_final_rtx_pro_6000\",\n  \"machine_type\": \"g4-standard-48\",\n  \"accelerator\": \"rtx-pro-6000\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 32768,\n  \"gradient_accumulation_steps\": 32,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
+    },
+    {
+      "name": "tipsv2_cuda_smoke",
+      "command": [
+        "C:\\Program Files\\Python312\\python.exe",
+        "scripts/verify_vision_checkpoint.py",
+        "data/raw/tipsv2-l14",
+        "--device",
+        "cuda",
+        "--max-tiles",
+        "1",
+        "--max-rss-gib",
+        "1.3"
+      ],
+      "returncode": 86,
+      "elapsed_seconds": 77.0653095000016,
+      "passed": false,
+      "stderr_tail": "WARNING: All log messages before absl::InitializeLog() is called are written to STDERR\nI0000 00:00:1788359874.269392  212728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.\nWARNING: All log messages before absl::InitializeLog() is called are written to STDERR\nI0000 00:00:1788359907.072220  212728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.\nC:\\Users\\Darsh Gupta\\.cache\\huggingface\\modules\\transformers_modules\\tipsv2-l14\\image_encoder.py:175: UserWarning: xFormers is not available (SwiGLU)\n  warnings.warn(\"xFormers is not available (SwiGLU)\")\nRSS watchdog stopping process: 1.296 GiB > 1.280 GiB\n"
+    },
+    {
+      "name": "real_multimodal_graft_smoke",
+      "passed": false,
+      "reason": "latest pointer missing"
+    }
+  ],
+  "gcp_authorized": false,
+  "note": "A human must still authorize the GCP command and budget after reviewing this report."
+}
