@@ -395,7 +395,10 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         )
         cacheable = self.config.vision_cache_encoded and vision_frozen
         cache_key = hashlib.sha256(
-            pixels.detach().to(device="cpu").contiguous().numpy().tobytes()
+            # NumPy has no bfloat16 dtype on this Windows/PyTorch path. Hash
+            # a stable FP32 CPU representation instead of making BF16 image
+            # inputs a platform-dependent cache failure.
+            pixels.detach().to(device="cpu", dtype=torch.float32).contiguous().numpy().tobytes()
         ).hexdigest()
         cache_hit = False
         if cacheable and cache_key in self._vision_encoded_cache:
@@ -437,12 +440,18 @@ class RealNemotronKestrelForCausalLM(nn.Module):
             if parameter.requires_grad
         }
 
-    def load_trainable_state_dict(self, state: dict[str, torch.Tensor]) -> None:
+    def load_trainable_state_dict(
+        self,
+        state: dict[str, torch.Tensor],
+        allow_missing_prefixes: tuple[str, ...] = (),
+    ) -> None:
         own = dict(self.named_parameters())
         missing = []
         for name, parameter in own.items():
             if parameter.requires_grad:
                 if name not in state:
+                    if any(name.startswith(prefix) for prefix in allow_missing_prefixes):
+                        continue
                     # The first SVD cache predates the stabilizing attention
                     # residual scale.  Keep its valid factors and retain the
                     # new parameter's configured initialization.

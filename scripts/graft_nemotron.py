@@ -130,7 +130,13 @@ def main() -> None:
         state_path = Path(args.init_cache)
         if not state_path.exists():
             raise SystemExit(f"initialization cache does not exist: {state_path}")
-        model.load_trainable_state_dict(torch.load(state_path, map_location="cpu", weights_only=False))
+        model.load_trainable_state_dict(
+            torch.load(state_path, map_location="cpu", weights_only=False),
+            # The reusable cache predates the vision graft. Keep attention
+            # compatibility strict while leaving the new projector at its
+            # intentional initialization.
+            allow_missing_prefixes=("vision_projector.",),
+        )
     model.freeze_backbone(args.trainable_layer_start)
     if use_vision:
         model.set_vision_trainable(args.vision_stage)

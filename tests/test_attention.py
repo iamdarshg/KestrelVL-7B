@@ -430,3 +430,27 @@ def test_real_nemotron_wrapper_grafts_vision_projector_and_cache() -> None:
     assert all(not parameter.requires_grad for parameter in vision.parameters())
     output = model(torch.ones(1, 4, dtype=torch.long), pixel_values=pixels, logits_to_keep=1)
     assert output.logits.shape == (1, 1, config.vocab_size)
+
+
+def test_real_nemotron_vision_cache_hash_accepts_bfloat16_pixels() -> None:
+    config = KestrelConfig.tiny(use_vision=True, vision_budget_ordinary=4)
+    vision = InternViTEncoder(hidden_size=config.vision_hidden_size)
+    projector = AdaptiveVisionProjector(
+        config.vision_hidden_size, config.hidden_size, config.vision_token_budget
+    )
+    model = RealNemotronKestrelForCausalLM(
+        config,
+        torch.nn.Embedding(config.vocab_size, config.hidden_size),
+        [],
+        torch.nn.RMSNorm(config.hidden_size),
+        torch.nn.Linear(config.hidden_size, config.vocab_size, bias=False),
+        "test-nemotron",
+        None,
+        vision_encoder=vision,
+        vision_projector=projector,
+    ).eval()
+    pixels = torch.rand(3, 20, 20, dtype=torch.bfloat16)
+    first = model.visual_tokens(pixels, budget=4)
+    second = model.visual_tokens(pixels, budget=4)
+    assert first.shape == second.shape == (1, 4, config.hidden_size)
+    assert model.last_vision_telemetry["cache_hit"] is True
