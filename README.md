@@ -215,6 +215,13 @@ cloud budget authorization; a human must still approve the exact GCP command
 and dollar budget. The current single-L4 profile records `$1.00` as the
 miscellaneous smoke/throughput ceiling.
 
+The current local development host also has a strict 1.3 GiB process-RSS
+ceiling. The guarded TIPSv2 448px forward currently exceeds it on Windows
+(about 1.41 GiB), so the multimodal real-weight graft remains blocked locally
+until the host or vision execution path is made smaller. This is an explicit
+failure gate, not a relaxed result, and it prevents cloud throughput testing
+from being mistaken for local validation.
+
 ## Reproducible stages
 
 `scripts/run_stage.py` implements the milestone names from the specification.

@@ -16,6 +16,7 @@ dependencies = [
   "pillow>=10.0",
   "numpy>=1.26",
   "tqdm>=4.66",
+  "psutil>=5.9",
 ]
 
 [project.optional-dependencies]

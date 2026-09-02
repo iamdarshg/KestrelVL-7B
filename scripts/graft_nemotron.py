@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import threading
 from pathlib import Path
 
 import torch
@@ -21,6 +23,32 @@ sys.path.insert(0, str(ROOT / "src"))
 from model.configuration import KestrelConfig
 from model.nemotron import load_real_nemotron_transplant
 from training.checkpoint import SafeCheckpointManager
+
+
+def _start_rss_watchdog(max_rss_gib: float | None) -> threading.Thread | None:
+    if max_rss_gib is None:
+        return None
+    import psutil
+
+    threshold = max(0.1, max_rss_gib - 0.02)
+
+    def watch() -> None:
+        while True:
+            rss = psutil.Process().memory_info().rss / 2**30
+            if rss > threshold:
+                print(
+                    f"RSS watchdog stopping process: {rss:.3f} GiB > {threshold:.3f} GiB",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                os._exit(86)
+            # The watchdog is deliberately short-period and has no effect on
+            # model state; it only enforces the local host-resource contract.
+            threading.Event().wait(0.02)
+
+    worker = threading.Thread(target=watch, name="rss-watchdog", daemon=True)
+    worker.start()
+    return worker
 
 
 def _default_model_id() -> str:
@@ -78,6 +106,16 @@ def main() -> None:
         action="store_true",
         help="smoke-only: keep the large LM head on CPU to avoid NF4 temp-workspace OOM",
     )
+    parser.add_argument(
+        "--smoke-hidden-only",
+        action="store_true",
+        help="smoke-only: omit the LM head and validate finite multimodal hidden states",
+    )
+    parser.add_argument(
+        "--max-rss-gib",
+        type=float,
+        help="optional local process-RSS limit checked during loading and smoke",
+    )
     parser.add_argument("--smoke-image-kind", default="ide")
     parser.add_argument("--smoke-vision-budget", type=int)
     parser.add_argument("--debug-finite", action=argparse.BooleanOptionalAction, default=False)
@@ -91,6 +129,12 @@ def main() -> None:
         raise SystemExit("--smoke-random-image requires vision; remove --without-vision")
     if args.smoke_cpu_lm_head and not args.smoke_prompt:
         raise SystemExit("--smoke-cpu-lm-head is only valid with --smoke-prompt")
+    if args.smoke_hidden_only and not args.smoke_prompt:
+        raise SystemExit("--smoke-hidden-only is only valid with --smoke-prompt")
+    if args.smoke_hidden_only and args.smoke_cpu_lm_head:
+        raise SystemExit("choose --smoke-hidden-only or --smoke-cpu-lm-head, not both")
+    if args.max_rss_gib is not None and args.max_rss_gib <= 0:
+        raise SystemExit("--max-rss-gib must be positive")
     use_vision = not args.without_vision
     if use_vision and not args.vision_model_id:
         raise SystemExit(
@@ -110,6 +154,10 @@ def main() -> None:
         raise SystemExit("vision_adapted requires a trainable vision stage")
 
     device = torch.device(args.device)
+    if args.max_rss_gib is not None:
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+    _start_rss_watchdog(args.max_rss_gib)
     if args.load_in_4bit and device.type != "cuda":
         raise SystemExit("real Nemotron Q4 grafting requires CUDA; use the tiny model for CPU-only tests")
     compute_dtype = torch.bfloat16 if device.type == "cuda" and torch.cuda.is_bf16_supported() else torch.float16
@@ -125,6 +173,8 @@ def main() -> None:
         vision_model_id=args.vision_model_id if use_vision else None,
         vision_stage=args.vision_stage if use_vision else "none",
         cpu_lm_head=args.smoke_cpu_lm_head,
+        skip_lm_head=args.smoke_hidden_only,
+        max_rss_gib=args.max_rss_gib,
     )
     if args.init_cache:
         state_path = Path(args.init_cache)
@@ -159,6 +209,7 @@ def main() -> None:
             "vision_model_id": args.vision_model_id if use_vision else None,
             "vision_stage": args.vision_stage if use_vision else "none",
             "cpu_lm_head": args.smoke_cpu_lm_head,
+            "lm_head_skipped": args.smoke_hidden_only,
             "stage": args.stage,
             "protocol": {
                 "kind": "real_nemotron_graft_initialization",
@@ -175,6 +226,8 @@ def main() -> None:
 
     smoke: dict[str, object] = {}
     if args.smoke_prompt:
+        import psutil
+
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(
@@ -195,15 +248,26 @@ def main() -> None:
                 vision_kind=args.smoke_image_kind,
                 vision_budget=args.smoke_vision_budget,
                 logits_to_keep=1,
+                output_hidden_states=args.smoke_hidden_only,
             )
+        rss_gib = psutil.Process().memory_info().rss / 2**30
+        finite_tensor = output.hidden_states if args.smoke_hidden_only else output.logits
         smoke = {
             "prompt_tokens": int(ids.shape[1]),
             "logit_shape": list(output.logits.shape),
+            "hidden_shape": list(output.hidden_states.shape) if output.hidden_states is not None else None,
             "vision_telemetry": model.last_vision_telemetry if pixels is not None else None,
-            "finite": bool(torch.isfinite(output.logits).all()),
+            "finite": bool(torch.isfinite(finite_tensor).all()),
+            "process_rss_gib": rss_gib,
+            "max_rss_gib": args.max_rss_gib,
         }
+        if args.max_rss_gib is not None and rss_gib > args.max_rss_gib:
+            raise MemoryError(
+                f"process RSS budget exceeded after smoke: {rss_gib:.3f} GiB > "
+                f"{args.max_rss_gib:.3f} GiB"
+            )
         if not smoke["finite"]:
-            raise FloatingPointError("non-finite logits during real Nemotron graft smoke")
+            raise FloatingPointError("non-finite hidden states/logits during real Nemotron graft smoke")
 
     checkpoint = manager.save(
         step,

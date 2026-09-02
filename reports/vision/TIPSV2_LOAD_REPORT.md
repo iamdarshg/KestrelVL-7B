@@ -1,6 +1,6 @@
 # TIPSv2 L/14 local load report
 
-Date: 2026-09-01
+Date: 2026-09-02
 
 Source: `google/tipsv2-l14`, Hugging Face `main`, observed repository commit
 `52847a71eb02a3082c370fbcd98cd799687bd4d0`.
@@ -44,3 +44,14 @@ python scripts/verify_vision_checkpoint.py .\data\raw\tipsv2-l14 --device cuda
 This report establishes checkpoint integrity and a single-tile forward only.
 It does not establish multimodal alignment quality, screenshot OCR quality,
 long-context behavior, Q4 compatibility, or any public benchmark result.
+
+## Strict host-RSS gate
+
+The current development host has a hard 1.3 GiB process-RSS ceiling. The
+streaming GPU loader removes the TIPSv2 text tower and keeps the image tower
+resident on CUDA, but a guarded 448px CUDA forward reached 1.411--1.415 GiB
+RSS on this Windows/PyTorch environment. That run was rejected by the gate;
+the real Nemotron-plus-vision graft is therefore not yet accepted under the
+local resource constraint. The standalone result above predates this stricter
+integration gate and is a GPU allocation result, not a host-RSS acceptance
+result. No GCP smoke or throughput job has been started.

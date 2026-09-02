@@ -72,6 +72,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default="reports/gcp/local_preflight.json")
     parser.add_argument("--skip-vision-cuda", action="store_true")
+    parser.add_argument("--max-rss-gib", type=float, default=1.3)
     args = parser.parse_args()
     output_path = Path(args.output)
     if not output_path.is_absolute():
@@ -128,6 +129,8 @@ def main() -> None:
                     "cuda",
                     "--max-tiles",
                     "1",
+                    "--max-rss-gib",
+                    str(args.max_rss_gib),
                 ],
             )
         )

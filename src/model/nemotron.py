@@ -31,6 +31,22 @@ from .vision.internvit import InternViTEncoder, dynamic_tiles
 from .vision.projector import AdaptiveVisionProjector
 
 
+def _assert_process_rss(max_rss_gib: float | None) -> float | None:
+    """Return process RSS in GiB and optionally enforce a local ceiling."""
+    if max_rss_gib is None:
+        return None
+    try:
+        import psutil
+    except ImportError as exc:  # pragma: no cover - only used with an explicit guard
+        raise RuntimeError("--max-rss-gib requires psutil") from exc
+    rss_gib = psutil.Process().memory_info().rss / 2**30
+    if rss_gib > max_rss_gib:
+        raise MemoryError(
+            f"process RSS budget exceeded: {rss_gib:.3f} GiB > {max_rss_gib:.3f} GiB"
+        )
+    return rss_gib
+
+
 def _materialize_linear_weight(module: nn.Module, dtype: torch.dtype) -> torch.Tensor:
     """Return a dense temporary copy, including a bitsandbytes 4-bit layer."""
     weight = module.weight
@@ -567,7 +583,11 @@ class RealNemotronKestrelForCausalLM(nn.Module):
             if logits_to_keep < 1:
                 raise ValueError("logits_to_keep must be positive")
             hidden_states = hidden_states[:, -logits_to_keep:]
-        lm_head_device = next(self.lm_head.parameters()).device
+        # Hidden-only integration smokes intentionally replace the huge
+        # vocabulary projection with Identity.  Avoid assuming every head has
+        # a parameter-bearing module in that validation mode.
+        lm_head_parameter = next(self.lm_head.parameters(), None)
+        lm_head_device = lm_head_parameter.device if lm_head_parameter is not None else hidden_states.device
         logits = self.lm_head(
             hidden_states.to(lm_head_device)
             if hidden_states.device != lm_head_device
@@ -605,6 +625,7 @@ class NemotronLoadInfo:
     vision_loaded: bool = False
     vision_model_id: str | None = None
     cpu_lm_head: bool = False
+    lm_head_skipped: bool = False
 
 
 def load_real_nemotron_transplant(
@@ -618,6 +639,8 @@ def load_real_nemotron_transplant(
     vision_model_id: str | Path | None = None,
     vision_stage: str = "projector",
     cpu_lm_head: bool = False,
+    max_rss_gib: float | None = None,
+    skip_lm_head: bool = False,
 ) -> tuple[RealNemotronKestrelForCausalLM, NemotronLoadInfo]:
     """Load real Nemotron weights and construct one transplant candidate.
 
@@ -636,6 +659,7 @@ def load_real_nemotron_transplant(
             "config.use_vision=True requires vision_model_id for the real model; "
             "use KestrelConfig(use_vision=False) for text-only measurements"
         )
+    _assert_process_rss(max_rss_gib)
     local_root = Path(model_id)
     streaming = local_root.is_dir() and (local_root / "model.safetensors.index.json").exists()
     kwargs: dict[str, Any] = {
@@ -727,6 +751,7 @@ def load_real_nemotron_transplant(
         del dense_weights, attention
         if target.type == "cuda":
             torch.cuda.empty_cache()
+        _assert_process_rss(max_rss_gib)
     if reader is not None:
         embed_tokens = nn.Embedding(
             hf_config.vocab_size,
@@ -738,14 +763,20 @@ def load_real_nemotron_transplant(
             reader.cpu("model.norm.weight", dtype=compute_dtype),
             target,
         )
-        lm_head_weight = reader.cpu("lm_head.weight", dtype=compute_dtype)
-        if cpu_lm_head:
+        if skip_lm_head:
+            # Hidden-state-only smokes do not need the 152k-vocabulary head;
+            # omitting it is what makes a full real graft compatible with a
+            # strict 1.3 GiB host-RSS ceiling.
+            lm_head = nn.Identity()
+        elif cpu_lm_head:
+            lm_head_weight = reader.cpu("lm_head.weight", dtype=compute_dtype)
             # Smoke-only escape hatch for cards where the temporary NF4
             # quantization workspace for the 152k-vocabulary head exceeds
             # remaining VRAM. The forward path shuttles only the final hidden
             # slice to this CPU head. Normal training/release keeps this off.
             lm_head = _materialize_parameter(base.lm_head, lm_head_weight, torch.device("cpu"))
         else:
+            lm_head_weight = reader.cpu("lm_head.weight", dtype=compute_dtype)
             lm_head = _replace_with_4bit_linear(
                 base.lm_head,
                 lm_head_weight,
@@ -754,7 +785,9 @@ def load_real_nemotron_transplant(
             )
     else:
         embed_tokens, norm, lm_head = base.model.embed_tokens, base.model.norm, base.lm_head
-        if cpu_lm_head:
+        if skip_lm_head:
+            lm_head = nn.Identity()
+        elif cpu_lm_head:
             lm_head = lm_head.to(device="cpu")
     vision_encoder: InternViTEncoder | None = None
     vision_projector: AdaptiveVisionProjector | None = None
@@ -764,12 +797,14 @@ def load_real_nemotron_transplant(
             hidden_size=config.vision_hidden_size,
             freeze=True,
             torch_dtype=compute_dtype,
+            device=target,
         )
         vision_projector = AdaptiveVisionProjector(
             config.vision_hidden_size,
             config.hidden_size,
             config.vision_token_budget,
         ).to(device=target, dtype=compute_dtype)
+        _assert_process_rss(max_rss_gib)
     model = RealNemotronKestrelForCausalLM(
         config,
         embed_tokens,
@@ -799,5 +834,6 @@ def load_real_nemotron_transplant(
         vision_loaded=vision_encoder is not None,
         vision_model_id=str(vision_model_id) if vision_model_id is not None else None,
         cpu_lm_head=cpu_lm_head,
+        lm_head_skipped=skip_lm_head,
     )
     return model, info

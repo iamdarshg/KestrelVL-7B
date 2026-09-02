@@ -87,7 +87,11 @@ def _read_safetensors_header(state_path: Path) -> tuple[dict[str, Any], int]:
     return header, 8 + header_size
 
 
-def _copy_safetensors_streaming(model: nn.Module, state_path: Path) -> None:
+def _copy_safetensors_streaming(
+    model: nn.Module,
+    state_path: Path,
+    allow_unexpected_prefixes: tuple[str, ...] = (),
+) -> None:
     """Copy a safetensors checkpoint into ``model`` one tensor at a time.
 
     ``safetensors.torch.load_file`` is normally the right API, but its mmap
@@ -108,6 +112,8 @@ def _copy_safetensors_streaming(model: nn.Module, state_path: Path) -> None:
             if key == "__metadata__":
                 continue
             if key not in model_state:
+                if any(key.startswith(prefix) for prefix in allow_unexpected_prefixes):
+                    continue
                 raise RuntimeError(f"unexpected tensor in vision checkpoint: {key}")
             if not isinstance(metadata, dict):
                 raise ValueError(f"invalid metadata for safetensors tensor: {key}")
@@ -154,6 +160,7 @@ def _copy_safetensors_streaming(model: nn.Module, state_path: Path) -> None:
 def _load_local_model_with_safetensors_fallback(
     model_path: Path,
     torch_dtype: torch.dtype | None,
+    device: torch.device | None = None,
 ) -> nn.Module:
     """Load a local custom-code model when Transformers rejects bare metadata.
 
@@ -172,10 +179,29 @@ def _load_local_model_with_safetensors_fallback(
     kwargs: dict[str, object] = {"trust_remote_code": True}
     if torch_dtype is not None:
         kwargs["torch_dtype"] = torch_dtype
-    model = AutoModel.from_config(config, **kwargs)
+    target_device = device or torch.device("cpu")
+    if target_device.type == "cuda":
+        # Construct the custom model on meta and materialize each destination
+        # parameter directly on the GPU. This keeps the 1.95 GB TIPSv2
+        # checkpoint out of the host RSS while the 7B language model is live.
+        from accelerate import init_empty_weights
+
+        with init_empty_weights():
+            model = AutoModel.from_config(config, **kwargs)
+        # The graft consumes only the image tower.  Keeping TIPSv2's text
+        # tower as meta modules is harmless, but removing it before streaming
+        # avoids materializing or traversing its tensors on the deployment
+        # device and leaves a smaller, explicit vision-only backend.
+        if getattr(config, "model_type", None) == "tipsv2" and hasattr(model, "text_encoder"):
+            model.text_encoder = nn.Identity()
+        model = model.to_empty(device=target_device)
+    else:
+        model = AutoModel.from_config(config, **kwargs)
+        if getattr(config, "model_type", None) == "tipsv2" and hasattr(model, "text_encoder"):
+            model.text_encoder = nn.Identity()
     state_path = model_path / "model.safetensors"
-    _copy_safetensors_streaming(model, state_path)
-    if torch_dtype is not None:
+    _copy_safetensors_streaming(model, state_path, allow_unexpected_prefixes=("text_encoder.",))
+    if torch_dtype is not None and target_device.type != "cuda":
         model = model.to(dtype=torch_dtype)
     return model
 
@@ -230,6 +256,7 @@ class InternViTEncoder(nn.Module):
         hidden_size: int = 1024,
         freeze: bool = True,
         torch_dtype: torch.dtype | None = None,
+        device: torch.device | str | None = None,
     ) -> None:
         super().__init__()
         self.model = None
@@ -260,7 +287,9 @@ class InternViTEncoder(nn.Module):
                     # also materially safer when Nemotron already occupies
                     # most of a small machine's virtual-memory budget.
                     self.model = _load_local_model_with_safetensors_fallback(
-                        local_path, torch_dtype
+                        local_path,
+                        torch_dtype,
+                        torch.device(device) if device is not None else None,
                     )
                 else:
                     self.model = AutoModel.from_pretrained(str(model_path), **kwargs)
