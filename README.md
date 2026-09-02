@@ -20,7 +20,10 @@ The issue-#1 memory/release foundation is now implemented in the reference
 path: local K/V is bounded, CSA/HCA state is append-only and chunked, the
 Lightning Indexer never needs a dense `Q x M` score tensor, long-context
 execution has explicit `full_recompute` and `stateful_truncated` modes, and
-production resume/release artifacts have safetensors-only paths. A fused CUDA
+production resume/release artifacts have safetensors-only paths. In training,
+`full_recompute` passes append-only cache state through tensor checkpoint
+boundaries and replays each chunk during backward, rather than retaining every
+chunk activation graph until the final step. A fused CUDA
 kernel, full real-Nemotron 1M forward/backward measurement, and 4060 Q4
 quality result remain validation work; the repository does not claim them.
 

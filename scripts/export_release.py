@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
@@ -12,26 +11,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from release.serialization import load_q4_bundle, save_q4_bundle  # noqa: E402
+from release.serialization import inspect_q4_bundle, save_q4_bundle  # noqa: E402
 from safetensors.torch import load_file  # noqa: E402
 
 
 def validate(root: Path) -> None:
-    required = ["model.safetensors", "config.json", "quantization_config.json", "checksums.json", "kestrel_runtime.json"]
-    missing = [name for name in required if not (root / name).is_file()]
-    if missing:
-        raise SystemExit(f"release validation failed; missing: {missing}")
-    checksums = json.loads((root / "checksums.json").read_text(encoding="utf-8"))
-    observed = hashlib.sha256((root / "model.safetensors").read_bytes()).hexdigest()
-    if checksums.get("model.safetensors") != observed:
-        raise SystemExit("release validation failed; model.safetensors checksum mismatch")
-    state = load_q4_bundle(root)
-    if not state:
-        raise SystemExit("release validation failed; no tensors")
-    manifest = json.loads((root / "quantization_config.json").read_text(encoding="utf-8"))
-    if manifest.get("pickle_free_loader") is not True:
-        raise SystemExit("release validation failed; pickle-free marker absent")
-    print(json.dumps({"valid": True, "tensors": len(state), "format": manifest["format"]}, sort_keys=True))
+    try:
+        report = inspect_q4_bundle(root)
+    except (FileNotFoundError, OSError, ValueError, KeyError) as exc:
+        raise SystemExit(f"release validation failed: {exc}") from exc
+    print(json.dumps(report, sort_keys=True))
 
 
 def main() -> None:

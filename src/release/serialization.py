@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import torch
+from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 
 
@@ -76,6 +77,80 @@ def _safe_name(name: str) -> str:
     return name.replace("/", "__").replace(".", "_")
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def inspect_q4_bundle(path: str | Path) -> dict[str, Any]:
+    """Validate a release from metadata without dequantizing its tensors.
+
+    This is the clean-process export gate.  ``safe_open`` reads the
+    safetensors header and individual tensor metadata, so validation does not
+    create a dense model-sized CPU copy merely to prove that a packed release
+    is structurally loadable.
+    """
+    root = Path(path)
+    required = (
+        "model.safetensors",
+        "config.json",
+        "quantization_config.json",
+        "checksums.json",
+        "kestrel_runtime.json",
+    )
+    missing = [name for name in required if not (root / name).is_file()]
+    if missing:
+        raise FileNotFoundError(f"Q4 bundle is missing required files: {missing}")
+    checksums = json.loads((root / "checksums.json").read_text(encoding="utf-8"))
+    for name, expected in checksums.items():
+        artifact = root / name
+        if not artifact.is_file() or _sha256_file(artifact) != expected:
+            raise ValueError(f"Q4 bundle checksum mismatch: {name}")
+    manifest = json.loads((root / "quantization_config.json").read_text(encoding="utf-8"))
+    if manifest.get("pickle_free_loader") is not True:
+        raise ValueError("Q4 bundle is missing the pickle-free loader marker")
+    entries = manifest.get("weights")
+    if not isinstance(entries, dict) or not entries:
+        raise ValueError("Q4 bundle contains no weight entries")
+    with safe_open(str(root / "model.safetensors"), framework="pt", device="cpu") as handle:
+        keys = set(handle.keys())
+        shapes = {key: tuple(handle.get_slice(key).get_shape()) for key in keys}
+        dtypes = {key: handle.get_slice(key).get_dtype() for key in keys}
+    referenced: set[str] = set()
+    for name, entry in entries.items():
+        storage = entry.get("storage")
+        if storage == "q4":
+            packed_name, scale_name = entry.get("packed"), entry.get("scales")
+            if packed_name not in keys or scale_name not in keys:
+                raise ValueError(f"Q4 entry {name!r} references a missing packed tensor")
+            if dtypes[packed_name] != "U8" or dtypes[scale_name] not in {"F16", "BF16", "F32"}:
+                raise ValueError(f"Q4 entry {name!r} has invalid packed/scales dtypes")
+            referenced.update((packed_name, scale_name))
+        elif storage == "native":
+            tensor_name = entry.get("tensor")
+            if tensor_name not in keys:
+                raise ValueError(f"native entry {name!r} references a missing tensor")
+            referenced.add(tensor_name)
+        else:
+            raise ValueError(f"unsupported Q4 storage for {name!r}: {storage!r}")
+    unused = keys - referenced
+    if unused:
+        raise ValueError(f"Q4 bundle contains unreferenced tensors: {sorted(unused)[:3]}")
+    return {
+        "valid": True,
+        "format": manifest.get("format"),
+        "tensor_entries": len(entries),
+        "packed_tensor_count": sum(entry.get("storage") == "q4" for entry in entries.values()),
+        "safetensors_keys": len(keys),
+        "metadata_only": True,
+        "total_model_bytes": (root / "model.safetensors").stat().st_size,
+        "tensor_shapes": shapes,
+    }
+
+
 def save_q4_bundle(
     state_dict: Mapping[str, torch.Tensor],
     output: str | Path,
@@ -129,10 +204,6 @@ def save_q4_bundle(
     }
     (temporary / "config.json").write_text(json.dumps(dict(config), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (temporary / "quantization_config.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
-    (temporary / "checksums.json").write_text(
-        json.dumps({"model.safetensors": digest}, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
     (temporary / "kestrel_runtime.json").write_text(
         json.dumps(
             {
@@ -146,6 +217,14 @@ def save_q4_bundle(
         )
         + "\n",
         encoding="utf-8",
+    )
+    checksums = {
+        file.name: _sha256_file(file)
+        for file in sorted(temporary.iterdir())
+        if file.is_file() and file.name != "checksums.json"
+    }
+    (temporary / "checksums.json").write_text(
+        json.dumps(checksums, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     if output.exists():
         shutil.rmtree(output)

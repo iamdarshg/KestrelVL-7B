@@ -12,8 +12,14 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
-from model.attention.cache import KestrelCache
+from model.attention.cache import (
+    CompressedStateStore,
+    IndexStateStore,
+    KestrelCache,
+    LayerCache,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,155 @@ def _sum_cross_entropy(logits: torch.Tensor, labels: torch.Tensor) -> tuple[torc
     ), count
 
 
+@dataclass(frozen=True)
+class _LayerCacheLayout:
+    """Non-tensor description for one checkpointed cache state.
+
+    Cache chunks are tensors, but their optional/prefix structure is ordinary
+    metadata.  Keeping that structure outside the autograd graph lets the
+    checkpoint boundary pass the actual K/V/index tensors explicitly without
+    serializing or materializing the complete cache.
+    """
+
+    layer_idx: int
+    has_local: bool
+    has_pending: bool
+    compressed_count: int
+    index_count: int
+    index_scale_flags: tuple[bool, ...]
+    index_dtype: str
+    local_window: int
+    next_position: int
+
+
+@dataclass(frozen=True)
+class _CacheLayout:
+    layers: tuple[_LayerCacheLayout, ...]
+
+
+def _cache_to_checkpoint_state(cache: KestrelCache) -> tuple[tuple[torch.Tensor, ...], _CacheLayout]:
+    """Flatten cache tensors while preserving append-only chunk boundaries."""
+    tensors: list[torch.Tensor] = []
+    layouts: list[_LayerCacheLayout] = []
+    for layer_idx in sorted(cache.layers):
+        layer = cache.layers[layer_idx]
+        has_local = layer.key is not None
+        has_pending = layer.pending_key is not None
+        if has_local:
+            if layer.value is None or layer.positions is None:
+                raise RuntimeError("local cache state is incomplete")
+            tensors.extend((layer.key, layer.value, layer.positions))  # type: ignore[arg-type]
+        if has_pending:
+            if layer.pending_value is None or layer.pending_positions is None:
+                raise RuntimeError("pending cache state is incomplete")
+            tensors.extend((layer.pending_key, layer.pending_value, layer.pending_positions))  # type: ignore[arg-type]
+        if len(layer.compressed.key_chunks) != len(layer.compressed.value_chunks) or len(layer.compressed.key_chunks) != len(layer.compressed.position_chunks):
+            raise RuntimeError("compressed cache chunk lists are misaligned")
+        for key, value, positions in layer.compressed.iter_chunks():
+            tensors.extend((key, value, positions))
+        if len(layer.index.key_chunks) != len(layer.index.scale_chunks):
+            raise RuntimeError("index cache chunk lists are misaligned")
+        scale_flags = tuple(scale is not None for scale in layer.index.scale_chunks)
+        for key, scale in layer.index.iter_chunks():
+            tensors.append(key)
+            if scale is not None:
+                tensors.append(scale)
+        layouts.append(
+            _LayerCacheLayout(
+                layer_idx=layer_idx,
+                has_local=has_local,
+                has_pending=has_pending,
+                compressed_count=len(layer.compressed.key_chunks),
+                index_count=len(layer.index.key_chunks),
+                index_scale_flags=scale_flags,
+                index_dtype=layer.index.dtype,
+                local_window=layer.local_window,
+                next_position=layer.next_position,
+            )
+        )
+    return tuple(tensors), _CacheLayout(tuple(layouts))
+
+
+def _cache_from_checkpoint_state(
+    state: tuple[torch.Tensor, ...], layout: _CacheLayout | None
+) -> KestrelCache:
+    """Rebuild a differentiable cache object from a checkpoint boundary."""
+    if layout is None:
+        if state:
+            raise RuntimeError("empty cache layout expected for non-empty initial state")
+        return KestrelCache()
+    cursor = 0
+    cache = KestrelCache()
+    for spec in layout.layers:
+        def take() -> torch.Tensor:
+            nonlocal cursor
+            if cursor >= len(state):
+                raise RuntimeError("checkpoint cache state ended before its layout")
+            value = state[cursor]
+            cursor += 1
+            return value
+
+        key = value = positions = None
+        if spec.has_local:
+            key, value, positions = take(), take(), take()
+        pending_key = pending_value = pending_positions = None
+        if spec.has_pending:
+            pending_key, pending_value, pending_positions = take(), take(), take()
+        compressed_keys: list[torch.Tensor] = []
+        compressed_values: list[torch.Tensor] = []
+        compressed_positions: list[torch.Tensor] = []
+        for _ in range(spec.compressed_count):
+            compressed_keys.append(take())
+            compressed_values.append(take())
+            compressed_positions.append(take())
+        index_keys: list[torch.Tensor] = []
+        index_scales: list[torch.Tensor | None] = []
+        for has_scale in spec.index_scale_flags:
+            index_keys.append(take())
+            index_scales.append(take() if has_scale else None)
+        cache.layers[spec.layer_idx] = LayerCache(
+            key=key,
+            value=value,
+            positions=positions,
+            local_window=spec.local_window,
+            next_position=spec.next_position,
+            pending_key=pending_key,
+            pending_value=pending_value,
+            pending_positions=pending_positions,
+            compressed=CompressedStateStore(compressed_keys, compressed_values, compressed_positions),
+            index=IndexStateStore(index_keys, index_scales, spec.index_dtype),
+        )
+    if cursor != len(state):
+        raise RuntimeError("checkpoint cache state has tensors not described by its layout")
+    return cache
+
+
+def _checkpointed_chunk(
+    model: torch.nn.Module,
+    chunk_ids: torch.Tensor,
+    state: tuple[torch.Tensor, ...],
+    layout: _CacheLayout | None,
+    pixel_values: torch.Tensor | None,
+) -> tuple[torch.Tensor, tuple[torch.Tensor, ...], _CacheLayout]:
+    """Execute one chunk and return its new explicit cache boundary.
+
+    ``torch.utils.checkpoint`` calls this function once during the forward
+    pass and replays it while computing gradients.  The cache object is
+    reconstructed from tensor state on every call, so replay cannot append to
+    the already-consumed mutable cache from the original forward pass.
+    """
+    cache = _cache_from_checkpoint_state(state, layout)
+    output = model(
+        chunk_ids,
+        labels=None,
+        pixel_values=pixel_values,
+        past_key_values=cache,
+        logits_to_keep=None,
+    )
+    new_state, new_layout = _cache_to_checkpoint_state(cache)
+    return output.logits[:, -chunk_ids.shape[1] :], new_state, new_layout
+
+
 def run_chunked_forward(
     model: torch.nn.Module,
     input_ids: torch.Tensor,
@@ -125,6 +280,10 @@ def run_chunked_forward(
     cache = KestrelCache(
         compressed_device=None if cfg.cache_device == "same" else cfg.cache_device
     )
+    checkpointed = optimizer is not None and cfg.mode == "full_recompute"
+    checkpoint_state: tuple[torch.Tensor, ...] = ()
+    checkpoint_layout: _CacheLayout | None = None
+    checkpoint_calls = 0
     loss_terms: list[tuple[torch.Tensor, int]] = []
     interval_terms: list[tuple[torch.Tensor, int]] = []
     total_loss_value = 0.0
@@ -144,17 +303,50 @@ def run_chunked_forward(
             stop = min(start + cfg.execution_chunk_tokens, length)
         chunk_ids = input_ids[:, start:stop]
         chunk_labels = labels[:, start:stop] if labels is not None else None
-        output = model(
-            chunk_ids,
-            labels=None,
-            pixel_values=pixel_values if start == 0 else None,
-            past_key_values=cache,
-            logits_to_keep=None if labels is not None or collect_logits else 1,
-        )
-        logits = output.logits
-        # A multimodal prefill has a visual prefix.  Only the final text
-        # positions participate in the causal text loss.
-        text_logits = logits[:, -chunk_ids.shape[1] :]
+        chunk_pixels = pixel_values if start == 0 else None
+        if checkpointed:
+            # The holder is intentionally forward-local.  The non-tensor
+            # layout is metadata; all differentiable cache state is returned
+            # as tensors through the checkpoint boundary.
+            layout_holder: dict[str, _CacheLayout] = {}
+
+            def run_checkpointed_chunk(
+                ids: torch.Tensor,
+                state: tuple[torch.Tensor, ...],
+                input_layout: _CacheLayout | None = checkpoint_layout,
+                input_pixels: torch.Tensor | None = chunk_pixels,
+            ) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+                nonlocal checkpoint_calls
+                checkpoint_calls += 1
+                chunk_logits, next_state, next_layout = _checkpointed_chunk(
+                    model, ids, state, input_layout, input_pixels
+                )
+                layout_holder["layout"] = next_layout
+                return chunk_logits, next_state
+
+            logits, checkpoint_state = checkpoint(
+                run_checkpointed_chunk,
+                chunk_ids,
+                checkpoint_state,
+                use_reentrant=False,
+            )
+            checkpoint_layout = layout_holder.get("layout")
+            if checkpoint_layout is None:
+                raise RuntimeError("checkpointed chunk did not return a cache layout")
+            # The checkpointed helper already strips any visual prefix.
+            text_logits = logits
+        else:
+            output = model(
+                chunk_ids,
+                labels=None,
+                pixel_values=chunk_pixels,
+                past_key_values=cache,
+                logits_to_keep=None if labels is not None or collect_logits else 1,
+            )
+            logits = output.logits
+            # A multimodal prefill has a visual prefix.  Only the final text
+            # positions participate in the causal text loss.
+            text_logits = logits[:, -chunk_ids.shape[1] :]
         if collect_logits:
             collected.append(text_logits.detach())
 
@@ -222,6 +414,10 @@ def run_chunked_forward(
     if total_tokens:
         result_loss = torch.tensor(total_loss_value / total_tokens, device=input_ids.device)
     result_logits = torch.cat(collected, dim=1) if collect_logits and collected else None
+    if checkpointed:
+        # Rebuild only the final lightweight cache object for accounting.  It
+        # shares the returned tensors and does not materialize history.
+        cache = _cache_from_checkpoint_state(checkpoint_state, checkpoint_layout)
     cache_memory = cache.memory_bytes()
     return ChunkedForwardResult(
         loss=result_loss,
@@ -237,6 +433,11 @@ def run_chunked_forward(
             "detach_interval_tokens": cfg.detach_interval_tokens,
             "cache_layers": len(cache.layers),
             "full_logits_collected": collect_logits,
+            "checkpointed_chunks": chunk_count if checkpointed else 0,
+            "checkpoint_calls": checkpoint_calls,
+            "retained_loss_graphs": 0 if checkpointed else len(loss_terms),
+            "recompute_backward": checkpointed,
+            "gradient_scope": "full_sequence_with_checkpointed_cache_state" if checkpointed else "retained_forward_graph",
             "cache_memory_bytes": cache_memory,
             "cache_device": cfg.cache_device,
             "evidence_label": (

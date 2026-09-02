@@ -116,10 +116,11 @@ def load_q4_runtime(model: nn.Module, path: str | Path, device: str | torch.devi
     manifest_path = root / "quantization_config.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Q4 manifest not found: {manifest_path}")
-    # ``load_q4_bundle`` performs checksum verification without invoking
-    # pickle.  It is intentionally called only for verification metadata; it
-    # is not used to obtain model tensors and therefore does not create a
-    # dense GPU copy.  Re-check the digest through the normal loader contract.
+    # Validate the artifact digest directly.  The runtime intentionally does
+    # not call the debug ``load_q4_bundle`` path here because that path
+    # dequantizes every tensor into a dense dictionary.  Packed tensors are
+    # loaded once onto the target device and each linear weight is
+    # dequantized only for its active matmul.
     checksum_path = root / "checksums.json"
     if checksum_path.exists():
         import hashlib

@@ -196,6 +196,7 @@ def run_option(
         device=device,
         load_in_4bit=True,
         compute_dtype=compute_dtype,
+        max_rss_gib=args.max_rss_gib,
         skip_svd_initialization=bool(
             args.init_cache
             and option_index in (0, 1, 3)
@@ -475,9 +476,17 @@ def main() -> None:
         default=0.0,
         help="Optional accounting rate; local ablation defaults to zero cash cost.",
     )
+    parser.add_argument(
+        "--max-rss-gib",
+        type=float,
+        default=1.3,
+        help="Hard process-RSS ceiling for local runs; 0 disables the guard.",
+    )
     parser.add_argument("--seed", type=int, default=20260831)
     parser.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
+    if args.max_rss_gib is not None and args.max_rss_gib <= 0:
+        args.max_rss_gib = None
     if args.model_id is None:
         local_model = ROOT / "data/raw/nemotron"
         args.model_id = str(local_model) if (local_model / "model.safetensors.index.json").exists() else "nvidia/OpenReasoning-Nemotron-7B"

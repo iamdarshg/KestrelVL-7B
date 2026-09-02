@@ -16,7 +16,7 @@ from model.vision.internvit import (
 )
 from model.vision.projector import AdaptiveVisionProjector
 from release.runtime import Q4Linear, load_q4_runtime
-from release.serialization import load_q4_bundle, save_q4_bundle
+from release.serialization import inspect_q4_bundle, load_q4_bundle, save_q4_bundle
 from training.long_context import LongContextConfig, run_chunked_forward
 from model.attention.module import V4FlashAttention
 from model.transplant.svd_init import initialize_attention_from_dense
@@ -207,6 +207,20 @@ def test_cache_keeps_bounded_local_state_and_chunked_compressed_state() -> None:
     assert restored.get(2).index.token_count == 10
 
 
+def test_cache_round_trip_preserves_compressed_placement_policy() -> None:
+    torch.manual_seed(120)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=4)
+    model = KestrelForCausalLM(config).eval()
+    cache = KestrelCache(compressed_device="cpu")
+    ids = torch.randint(0, config.vocab_size, (1, 24))
+    with torch.inference_mode():
+        model(ids, past_key_values=cache)
+    restored = KestrelCache.from_state_dict(cache.state_dict())
+    assert restored.compressed_device == "cpu"
+    assert restored.get(2).compressed.key_chunks
+    assert all(chunk.device.type == "cpu" for chunk in restored.get(2).compressed.key_chunks)
+
+
 def test_compressed_cache_can_live_on_cpu_for_long_context_inference() -> None:
     torch.manual_seed(122)
     config = KestrelConfig.tiny(use_vision=False, sliding_window=4)
@@ -295,6 +309,28 @@ def test_long_context_chunked_forward_does_not_need_full_logit_buffer() -> None:
     assert result.telemetry["full_logits_collected"] is True
 
 
+def test_full_recompute_replays_chunks_without_retaining_forward_loss_graphs() -> None:
+    torch.manual_seed(150)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=8)
+    model = KestrelForCausalLM(config)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    ids = torch.randint(0, config.vocab_size, (1, 18))
+    labels = torch.roll(ids, shifts=-1, dims=1)
+    result = run_chunked_forward(
+        model,
+        ids,
+        labels,
+        config=LongContextConfig(mode="full_recompute", execution_chunk_tokens=5, max_context_tokens=64),
+        optimizer=optimizer,
+    )
+    assert result.loss is not None and torch.isfinite(result.loss)
+    assert result.telemetry["recompute_backward"] is True
+    assert result.telemetry["checkpointed_chunks"] == 4
+    assert result.telemetry["checkpoint_calls"] > result.telemetry["checkpointed_chunks"]
+    assert result.telemetry["retained_loss_graphs"] == 0
+    assert result.telemetry["gradient_scope"] == "full_sequence_with_checkpointed_cache_state"
+
+
 def test_chunked_forward_reports_explicit_cpu_cache_policy() -> None:
     torch.manual_seed(151)
     config = KestrelConfig.tiny(use_vision=False, sliding_window=8)
@@ -339,6 +375,9 @@ def test_q4_bundle_is_pickle_free_and_round_trips(tmp_path) -> None:
     assert restored["norm.weight"].dtype == torch.bfloat16
     assert restored["layer.weight"].shape == state["layer.weight"].shape
     assert torch.allclose(restored["layer.weight"].float(), state["layer.weight"], atol=0.3)
+    report = inspect_q4_bundle(output)
+    assert report["metadata_only"] is True
+    assert report["packed_tensor_count"] == 1
 
 
 def test_q4_runtime_keeps_linear_weights_packed(tmp_path) -> None:

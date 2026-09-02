@@ -35,3 +35,12 @@ to the InternViT reference. Its custom output is normalized into the common
 patch-token contract, and the shipped no-normalization processor contract is
 preserved. A complete TIPSv2 weight file and the image smoke script are still
 required before using it for multimodal training.
+
+The long-context training audit is now explicit: full-recompute optimizer
+steps use checkpointed tensor cache boundaries and backward replay, while
+stateful-truncated steps keep their deliberate detach boundaries. The real
+Nemotron 10M-token local ablation was attempted on 2026-09-03 but was stopped
+before candidate training because the hard 1.3 GiB host-RSS ceiling was
+exceeded during first-layer construction. It produced no valid score or
+checkpoint and remains blocked pending a permitted higher-memory execution
+environment.

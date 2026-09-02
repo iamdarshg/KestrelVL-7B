@@ -347,7 +347,14 @@ class KestrelCache:
         return 0 if layer is None else layer.next_position
 
     def state_dict(self) -> dict[str, object]:
-        return {str(idx): item.state_dict() for idx, item in self.layers.items()}
+        # The envelope records placement policy as well as layer tensors.  A
+        # plain layer-map remains accepted by ``from_state_dict`` for caches
+        # written by the first prototype.
+        return {
+            "format": "kestrel-cache-v2",
+            "compressed_device": self.compressed_device,
+            "layers": {str(idx): item.state_dict() for idx, item in self.layers.items()},
+        }
 
     def memory_bytes(self) -> dict[str, int]:
         totals = {
@@ -364,8 +371,19 @@ class KestrelCache:
 
     @classmethod
     def from_state_dict(cls, state: dict[str, object]) -> "KestrelCache":
-        cache = cls()
-        for raw_idx, raw_item in state.items():
+        if "layers" in state:
+            raw_layers = state["layers"]
+            if not isinstance(raw_layers, dict):
+                raise ValueError("cache layers must be a mapping")
+            compressed_device = state.get("compressed_device")
+            if compressed_device not in {None, "cpu", "cuda"}:
+                raise ValueError("serialized compressed_device must be None, cpu, or cuda")
+            cache = cls(compressed_device=compressed_device)  # type: ignore[arg-type]
+        else:
+            # Compatibility with the original unversioned layer-map format.
+            raw_layers = state
+            cache = cls()
+        for raw_idx, raw_item in raw_layers.items():
             item = raw_item  # type: ignore[assignment]
             compressed = item.get("compressed")  # type: ignore[union-attr]
             if compressed is None:

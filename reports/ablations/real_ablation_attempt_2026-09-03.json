@@ -1,0 +1,19 @@
+{
+  "status": "blocked_before_candidate_training",
+  "command": "python scripts/run_real_ablations.py --device cuda --total-tokens 10000000",
+  "global_token_budget": 10000000,
+  "candidate_count": 4,
+  "candidate_token_budget": 2500000,
+  "model_id": "data/raw/nemotron",
+  "device": "cuda:0",
+  "rss_limit_gib": 1.3,
+  "failure": {
+    "phase": "real_Nemotron_transplant_construction",
+    "detail": "The first retry reached approximately 1.389 GiB working set while streaming the first real layer; the run was stopped before candidate training and before any score was written.",
+    "cuda_retry": "An earlier attempt also hit CUDA error cudaErrorDevicesUnavailable during first-layer construction; a standalone CUDA allocation subsequently succeeded."
+  },
+  "scores_valid": false,
+  "checkpoint_written": false,
+  "gcp_started": false,
+  "interpretation": "This is a resource-gate failure, not an architecture result. No candidate wins and no reconstruction gate may be inferred."
+}
