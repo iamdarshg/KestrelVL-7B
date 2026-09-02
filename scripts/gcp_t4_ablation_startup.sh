@@ -6,7 +6,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 PROJECT_DIR=/opt/kestrel
 REPO_URL="https://github.com/iamdarshg/KestrelVL-7B.git"
-REPO_COMMIT="28a4ede"
+REPO_COMMIT="0d90ef5"
 DEADLINE_EPOCH="${KESTREL_DEADLINE_EPOCH:-}"
 if [[ -z "$DEADLINE_EPOCH" ]]; then
   DEADLINE_EPOCH="$(curl -fsS -H 'Metadata-Flavor: Google' \
@@ -28,7 +28,14 @@ rm -rf "$PROJECT_DIR"
 git clone --filter=blob:none "$REPO_URL" "$PROJECT_DIR"
 git -C "$PROJECT_DIR" checkout "$REPO_COMMIT"
 cd "$PROJECT_DIR"
-python3 -m pip install --no-cache-dir -e .
+python3 -m pip install --no-cache-dir \
+  'transformers>=4.47' 'safetensors>=0.4' 'pyyaml>=6.0' \
+  'pillow>=10.0' 'numpy>=1.26' 'tqdm>=4.66' 'psutil>=5.9' \
+  'bitsandbytes>=0.43' 'accelerate>=0.34'
+# The image ships a torchaudio binary compiled against a different torch
+# release.  Kestrel does not use audio; remove that incompatible optional
+# package so Transformers can import the Qwen2 model cleanly.
+python3 -m pip uninstall -y torchaudio || true
 
 mkdir -p "$REPORT_DIR"
 cat > "$REPORT_DIR/gcp_t4_runtime.json" <<EOF
@@ -39,7 +46,7 @@ cat > "$REPORT_DIR/gcp_t4_runtime.json" <<EOF
   "commit": "$(git rev-parse HEAD)",
   "global_token_budget": 10000000,
   "candidate_count": 4,
-  "budget_usd": 0.20,
+  "budget_usd": 1.00,
   "deadline_epoch": ${DEADLINE_EPOCH:-0}
 }
 EOF

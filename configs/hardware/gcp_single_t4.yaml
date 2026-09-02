@@ -31,8 +31,8 @@ sequence_length: 1024
 gradient_checkpointing: true
 total_ablation_tokens: 10000000
 tokens_per_candidate: 2500000
-max_runtime_minutes: 16
-max_budget_usd: 0.20
+max_runtime_minutes: 90
+max_budget_usd: 1.00
 spot: false
 image_family: pytorch-2-9-cu129-ubuntu-2204-nvidia-580
 zone: asia-south1-a
