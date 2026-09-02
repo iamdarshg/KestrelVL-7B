@@ -6,7 +6,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 PROJECT_DIR=/opt/kestrel
 REPO_URL="https://github.com/iamdarshg/KestrelVL-7B.git"
-REPO_COMMIT="8dac9bc"
+REPO_COMMIT="4e6b011"
 DEADLINE_EPOCH="${KESTREL_DEADLINE_EPOCH:-}"
 if [[ -z "$DEADLINE_EPOCH" ]]; then
   DEADLINE_EPOCH="$(curl -fsS -H 'Metadata-Flavor: Google' \
@@ -66,6 +66,17 @@ export TRANSFORMERS_CACHE=/opt/huggingface/transformers
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=false
 
+# Prefer the fully materialized HF snapshot when the image cache already has
+# it.  This selects Kestrel's bounded streaming loader and avoids rebuilding
+# dense Q/K/V/O workspaces for every candidate.  Fall back to the Hub ID on a
+# cold VM so the bootstrap remains self-contained.
+NEMOTRON_MODEL_ID="nvidia/OpenReasoning-Nemotron-7B"
+NEMOTRON_SNAPSHOT="$(find "$HF_HOME/hub/models--nvidia--OpenReasoning-Nemotron-7B/snapshots" \
+  -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -n 1 || true)"
+if [[ -n "$NEMOTRON_SNAPSHOT" && -f "$NEMOTRON_SNAPSHOT/model.safetensors.index.json" ]]; then
+  NEMOTRON_MODEL_ID="$NEMOTRON_SNAPSHOT"
+fi
+
 echo "[$(timestamp)] gpu diagnostics"
 nvidia-smi || true
 python3 - <<'PY'
@@ -83,7 +94,7 @@ echo "[$(timestamp)] starting real Nemotron ablation with ${RUN_SECONDS}s run bu
 set +e
 timeout --signal=TERM --kill-after=20s "${RUN_SECONDS}s" \
   python3 scripts/run_real_ablations.py \
-    --model-id nvidia/OpenReasoning-Nemotron-7B \
+    --model-id "$NEMOTRON_MODEL_ID" \
     --device cuda \
     --total-tokens 10000000 \
     --sequence-length 1024 \
@@ -91,6 +102,9 @@ timeout --signal=TERM --kill-after=20s "${RUN_SECONDS}s" \
     --checkpoint-interval 1000 \
     --max-checkpoints 1 \
     --gradient-checkpointing \
+    --training-logit-stride 16 \
+    --trainable-layer-start 24 \
+    --muon-ns-steps 1 \
     --output "$REPORT_DIR/gcp_t4_ablation_results.json" \
           --checkpoint-root checkpoints/gcp_t4_real_ablations \
           --init-cache checkpoints/gcp_t4_real_ablations/svd_init.pt \
