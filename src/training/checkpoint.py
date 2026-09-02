@@ -136,6 +136,11 @@ class CheckpointManager:
 
 
 def _json_safe(value: Any) -> Any:
+    if isinstance(value, torch.dtype):
+        # Optimizer defaults can contain dtype objects (Muon stores its
+        # momentum dtype in every parameter group).  Keep the manifest
+        # JSON-only and retain enough information for an exact resume.
+        return {"__torch_dtype__": str(value).removeprefix("torch.")}
     if isinstance(value, np.ndarray):
         return {"__ndarray__": value.tolist(), "dtype": str(value.dtype)}
     if isinstance(value, tuple):
@@ -154,6 +159,12 @@ def _json_safe(value: Any) -> Any:
 def _restore_json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_restore_json_safe(item) for item in value]
+    if isinstance(value, dict) and "__torch_dtype__" in value:
+        name = value["__torch_dtype__"]
+        dtype = getattr(torch, str(name), None)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError(f"unknown serialized torch dtype: {name!r}")
+        return dtype
     if isinstance(value, dict) and "__tuple__" in value:
         return tuple(_restore_json_safe(item) for item in value["__tuple__"])
     if isinstance(value, dict) and "__ndarray__" in value:

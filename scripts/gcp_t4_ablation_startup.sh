@@ -6,7 +6,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 PROJECT_DIR=/opt/kestrel
 REPO_URL="https://github.com/iamdarshg/KestrelVL-7B.git"
-REPO_COMMIT="0d90ef5"
+REPO_COMMIT="9dbfc33"
 DEADLINE_EPOCH="${KESTREL_DEADLINE_EPOCH:-}"
 if [[ -z "$DEADLINE_EPOCH" ]]; then
   DEADLINE_EPOCH="$(curl -fsS -H 'Metadata-Flavor: Google' \
@@ -92,8 +92,9 @@ timeout --signal=TERM --kill-after=20s "${RUN_SECONDS}s" \
     --max-checkpoints 1 \
     --gradient-checkpointing \
     --output "$REPORT_DIR/gcp_t4_ablation_results.json" \
-    --checkpoint-root checkpoints/gcp_t4_real_ablations \
-    --local-gpu-hourly-cost 0.35
+          --checkpoint-root checkpoints/gcp_t4_real_ablations \
+          --init-cache checkpoints/gcp_t4_real_ablations/svd_init.pt \
+          --local-gpu-hourly-cost 0.35
 RUN_STATUS=$?
 set -e
 echo "[$(timestamp)] ablation exit=${RUN_STATUS}"
