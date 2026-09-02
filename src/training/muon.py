@@ -135,6 +135,7 @@ def build_muon_optimizer(
     adamw_lr: float = 1e-5,
     weight_decay: float = 0.01,
     muon_max_matrix_dimension: int | None = None,
+    muon_ns_steps: int = 5,
 ) -> Muon:
     """Build Muon/AdamW groups and fail if there are no trainable parameters.
 
@@ -142,7 +143,13 @@ def build_muon_optimizer(
     Newton--Schulz allocations on vocabulary-sized matrices.  Excluded
     matrices are placed in the explicitly named AdamW fallback group; the
     default ``None`` preserves the original all-matrix Muon behavior.
+    ``muon_ns_steps`` is configurable because the Newton--Schulz refinement
+    is the dominant optimizer cost on older GPUs; one step is a useful
+    screening mode while the default five-step update remains the quality
+    profile.
     """
+    if muon_ns_steps < 1:
+        raise ValueError("muon_ns_steps must be positive")
     trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
     if not trainable:
         raise ValueError("no trainable parameters")
@@ -169,6 +176,7 @@ def build_muon_optimizer(
         lr=muon_lr,
         adamw_lr=adamw_lr,
         weight_decay=weight_decay,
+        ns_steps=muon_ns_steps,
         momentum_dtype=torch.bfloat16,
     )
     optimizer.matrix_parameter_count = sum(p.numel() for p in muon_matrices)  # type: ignore[attr-defined]

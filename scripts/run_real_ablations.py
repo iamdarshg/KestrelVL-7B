@@ -245,7 +245,11 @@ def run_option(
         },
     )
     optimizer = build_muon_optimizer(
-        model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, weight_decay=args.weight_decay
+        model,
+        muon_lr=args.muon_lr,
+        adamw_lr=args.adamw_lr,
+        weight_decay=args.weight_decay,
+        muon_ns_steps=args.muon_ns_steps,
     )
     precision_report = validate_precision_policy(
         model,
@@ -399,6 +403,7 @@ def run_option(
         "trainable_parameter_count": model.parameter_count(trainable_only=True),
         "muon_matrix_parameters": getattr(optimizer, "matrix_parameter_count", None),
         "minimal_adamw_vector_parameters": getattr(optimizer, "vector_parameter_count", None),
+        "muon_ns_steps": args.muon_ns_steps,
         "trainable_layer_start": args.trainable_layer_start,
         "compute_dtype": str(compute_dtype),
         "training_logit_stride": args.training_logit_stride,
@@ -427,6 +432,12 @@ def main() -> None:
     parser.add_argument("--muon-lr", type=float, default=0.002)
     parser.add_argument("--adamw-lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument(
+        "--muon-ns-steps",
+        type=int,
+        default=5,
+        help="Newton--Schulz refinement steps; use 1 for a fast older-GPU screening profile",
+    )
     parser.add_argument("--checkpoint-interval", type=int, default=1000)
     parser.add_argument(
         "--max-checkpoints",
