@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 
@@ -329,6 +331,37 @@ def test_full_recompute_replays_chunks_without_retaining_forward_loss_graphs() -
     assert result.telemetry["checkpoint_calls"] > result.telemetry["checkpointed_chunks"]
     assert result.telemetry["retained_loss_graphs"] == 0
     assert result.telemetry["gradient_scope"] == "full_sequence_with_checkpointed_cache_state"
+
+
+def test_full_recompute_gradient_matches_direct_tiny_backward() -> None:
+    torch.manual_seed(152)
+    config = KestrelConfig.tiny(use_vision=False, sliding_window=8)
+    direct = KestrelForCausalLM(config)
+    replayed = copy.deepcopy(direct)
+    ids = torch.randint(0, config.vocab_size, (1, 18))
+    labels = torch.roll(ids, shifts=-1, dims=1)
+    direct_output = direct(ids)
+    direct_loss = torch.nn.functional.cross_entropy(
+        direct_output.logits[:, :-1].reshape(-1, config.vocab_size),
+        labels[:, 1:].reshape(-1),
+    )
+    direct_loss.backward()
+    optimizer = torch.optim.SGD(replayed.parameters(), lr=0.0)
+    result = run_chunked_forward(
+        replayed,
+        ids,
+        labels,
+        config=LongContextConfig(mode="full_recompute", execution_chunk_tokens=5, max_context_tokens=64),
+        optimizer=optimizer,
+    )
+    assert result.loss is not None
+    assert torch.allclose(result.loss, direct_loss.detach(), atol=2e-5, rtol=2e-5)
+    differences = [
+        (left.grad - right.grad).abs().max()
+        for left, right in zip(direct.parameters(), replayed.parameters())
+        if left.grad is not None and right.grad is not None
+    ]
+    assert differences and max(differences) < 2e-5
 
 
 def test_chunked_forward_reports_explicit_cpu_cache_policy() -> None:

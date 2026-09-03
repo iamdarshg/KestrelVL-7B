@@ -28,12 +28,14 @@ import torch.nn.functional as F
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.corpus import CompositionLockedCorpus, CorpusSpec
-from model.configuration import KestrelConfig
-from model.nemotron import load_real_nemotron_transplant
-from training.checkpoint import SafeCheckpointManager
-from training.muon import build_muon_optimizer
-from training.precision import PrecisionPolicy, optimizer_telemetry, validate_precision_policy
+from data.corpus import CompositionLockedCorpus, CorpusSpec  # noqa: E402
+from data.real_corpus import RealCorpusSpec, RealStreamingCorpus  # noqa: E402
+from data.manifests import ManifestStore  # noqa: E402
+from model.configuration import KestrelConfig  # noqa: E402
+from model.nemotron import load_real_nemotron_transplant  # noqa: E402
+from training.checkpoint import SafeCheckpointManager  # noqa: E402
+from training.muon import build_muon_optimizer  # noqa: E402
+from training.precision import PrecisionPolicy, optimizer_telemetry, validate_precision_policy  # noqa: E402
 
 
 OPTIONS: tuple[dict[str, object], ...] = (
@@ -170,13 +172,25 @@ def validate_local_model_files(model_id: str) -> None:
 
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, corpus: CompositionLockedCorpus, start: int, token_budget: int, sequence_length: int, device: torch.device) -> tuple[float, int]:
+def evaluate(
+    model: torch.nn.Module,
+    corpus: CompositionLockedCorpus | RealStreamingCorpus,
+    tokenizer: object,
+    backend: str,
+    start: int,
+    token_budget: int,
+    sequence_length: int,
+    device: torch.device,
+) -> tuple[float, int]:
     model.eval()
     total_loss = 0.0
     total_tokens = 0
-    for cursor, inputs, labels in corpus.iter_batches(
-        start + token_budget, sequence_length, start_cursor=start, validation=True
-    ):
+    if backend == "real":
+        corpus.reset(preserve_index=True)
+        batches = corpus.iter_token_batches(tokenizer, token_budget, sequence_length, requested_split="architecture_validation")
+    else:
+        batches = corpus.iter_batches(start + token_budget, sequence_length, start_cursor=start, validation=True)
+    for cursor, inputs, labels in batches:
         del cursor
         inputs, labels = inputs.to(device), labels.to(device)
         loss = loss_for_batch(model, inputs, labels)
@@ -192,7 +206,7 @@ def run_option(
     args: argparse.Namespace,
     option_index: int,
     option: dict[str, object],
-    spec: CorpusSpec,
+    spec: CorpusSpec | RealCorpusSpec,
     tokenizer: object,
     device: torch.device,
 ) -> dict[str, object]:
@@ -236,7 +250,11 @@ def run_option(
     model.debug_finite = args.debug_finite
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)
+    if args.corpus_backend == "real":
+        provenance = ManifestStore(ROOT / "data/provenance.sqlite")
+        corpus: CompositionLockedCorpus | RealStreamingCorpus = RealStreamingCorpus(spec, provenance)  # type: ignore[arg-type]
+    else:
+        corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)  # type: ignore[arg-type]
     checkpoint_root = Path(args.checkpoint_root)
     if not checkpoint_root.is_absolute():
         checkpoint_root = ROOT / checkpoint_root
@@ -255,6 +273,7 @@ def run_option(
                 "global_token_budget": args.total_tokens,
                 "sequence_length": args.sequence_length,
                 "compute_dtype": str(compute_dtype),
+                "corpus_backend": args.corpus_backend,
             },
         },
     )
@@ -287,6 +306,8 @@ def run_option(
         token_cursor = int(state.get("dataset", {}).get("token_cursor", 0))
         if state.get("dataset", {}).get("corpus_fingerprint") != spec.fingerprint():
             raise RuntimeError("checkpoint corpus fingerprint does not match current final corpus")
+        if args.corpus_backend == "real" and state.get("dataset", {}).get("corpus_state"):
+            corpus.load_state_dict(state["dataset"]["corpus_state"])  # type: ignore[arg-type]
         print(f"resumed {option['name']} at step={step} token_cursor={token_cursor}", flush=True)
     elif args.resume:
             manager.save(
@@ -307,7 +328,10 @@ def run_option(
             length = min(sequence_length, target - token_cursor)
             if length < 2:
                 break
-            inputs, labels = corpus.batch(token_cursor, length, validation=False)
+            if args.corpus_backend == "real":
+                inputs, labels = corpus.token_batch(tokenizer, token_cursor, length, requested_split="train")  # type: ignore[union-attr]
+            else:
+                inputs, labels = corpus.batch(token_cursor, length, validation=False)  # type: ignore[union-attr]
             inputs, labels = inputs.to(device), labels.to(device)
             loss = loss_for_batch(model, inputs, labels, args.training_logit_stride)
             if not torch.isfinite(loss):
@@ -332,6 +356,7 @@ def run_option(
                         "token_cursor": token_cursor,
                         "target_train_tokens": target,
                         "corpus_fingerprint": spec.fingerprint(),
+                        "corpus_state": corpus.state_dict() if args.corpus_backend == "real" else None,
                     },
                     metrics={
                         "option": option,
@@ -345,7 +370,7 @@ def run_option(
                     step,
                     model,
                     optimizer,
-                    dataset_state={"token_cursor": token_cursor, "corpus_fingerprint": spec.fingerprint()},
+                    dataset_state={"token_cursor": token_cursor, "corpus_fingerprint": spec.fingerprint(), "corpus_state": corpus.state_dict() if args.corpus_backend == "real" else None},
                     metrics={"option": option, "status": "preempted_checkpoint"},
                 )
                 raise KeyboardInterrupt
@@ -355,7 +380,7 @@ def run_option(
 
     train_seconds = time.perf_counter() - start_time
     val_loss, val_tokens = evaluate(
-        model, corpus, train_tokens, validation_tokens, sequence_length, device
+        model, corpus, tokenizer, args.corpus_backend, train_tokens, validation_tokens, sequence_length, device
     )
     if device.type == "cuda":
         torch.cuda.synchronize()
@@ -371,6 +396,7 @@ def run_option(
             "target_train_tokens": target,
             "validation_tokens": val_tokens,
             "corpus_fingerprint": spec.fingerprint(),
+            "corpus_state": corpus.state_dict() if args.corpus_backend == "real" else None,
         },
         metrics={
             "option": option,
@@ -427,6 +453,8 @@ def run_option(
         "precision": precision_report,
         "optimizer": optimizer_telemetry(optimizer),
     }
+    if args.corpus_backend == "real":
+        provenance.close()  # type: ignore[name-defined]
     del optimizer, model
     gc.collect()
     if device.type == "cuda":
@@ -439,7 +467,13 @@ def main() -> None:
     parser.add_argument("--model-id", default=None)
     parser.add_argument("--revision")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--corpus-config", default="configs/data/final_corpus.yaml")
+    parser.add_argument("--corpus-config", default="configs/data/real_corpus.yaml")
+    parser.add_argument(
+        "--corpus-backend",
+        choices=("real", "synthetic"),
+        default="real",
+        help="production ablations default to governed real streaming; synthetic is explicit smoke-only",
+    )
     parser.add_argument("--total-tokens", type=int, default=10_000_000)
     parser.add_argument("--validation-tokens", type=int, default=100_000)
     parser.add_argument(
@@ -533,9 +567,12 @@ def main() -> None:
         local_model = ROOT / "data/raw/nemotron"
         args.model_id = str(local_model) if (local_model / "model.safetensors.index.json").exists() else "nvidia/OpenReasoning-Nemotron-7B"
     validate_local_model_files(args.model_id)
-    spec = CorpusSpec.from_yaml(ROOT / args.corpus_config)
-    if spec.total_ablation_token_budget != args.total_tokens:
-        raise ValueError("--total-tokens must equal total_ablation_token_budget in the final corpus config")
+    if args.corpus_backend == "real":
+        spec = RealCorpusSpec.from_yaml(ROOT / args.corpus_config)
+    else:
+        spec = CorpusSpec.from_yaml(ROOT / args.corpus_config)
+        if spec.total_ablation_token_budget != args.total_tokens:
+            raise ValueError("--total-tokens must equal total_ablation_token_budget in the synthetic smoke config")
     if args.total_tokens < len(OPTIONS) * 4:
         raise ValueError("total token budget is too small for the four-candidate corpus contract")
     if args.candidate_index is None and args.total_tokens % len(OPTIONS):

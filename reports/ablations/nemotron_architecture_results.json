@@ -1,0 +1,19 @@
+{
+  "status": "not_run",
+  "winner": null,
+  "selection": null,
+  "evidence_label": "no_valid_real_data_ablation",
+  "candidates": [
+    "mhc_on_kv1_hca128_topk128",
+    "mhc_on_kv2_hca128_topk64",
+    "mhc_on_kv2_hca128_topk128",
+    "mhc_on_kv2_hca64_topk256"
+  ],
+  "reason": "The previous L4 run used the synthetic generic-code-v2 stream and evaluated one candidate only. The governed real corpus is implemented but its content resolvers and local docs/history exports are not available, so no causal architecture ranking is scientifically valid.",
+  "prior_evidence": {
+    "bert_proxy": "historical proxy only; supports local-128 plus mHC prior",
+    "tiny_proxy": "historical proxy only; cannot decide causal KV/HCA/top-k",
+    "l4_single_option": "pipeline demonstration only; non-selective synthetic-data run"
+  },
+  "next_experiment": "Run Stage A from configs/ablations/nemotron_architecture_screen.yaml after the real corpus content gate passes locally."
+}

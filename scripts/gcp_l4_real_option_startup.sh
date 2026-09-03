@@ -10,6 +10,7 @@ REPO_COMMIT="10fdd7a"
 DEADLINE_EPOCH="${KESTREL_DEADLINE_EPOCH:-}"
 BUDGET_USD="10.00"
 SPOT_RATE_USD_PER_HOUR="0.423956"
+PROJECTED_HOURS="${KESTREL_PROJECTED_HOURS:-12}"
 
 timestamp() { date --iso-8601=seconds; }
 echo "[$(timestamp)] startup begin host=$(hostname) deadline=${DEADLINE_EPOCH:-unset} budget=${BUDGET_USD}"
@@ -34,6 +35,10 @@ rm -rf "$PROJECT_DIR"
 git clone --filter=blob:none "$REPO_URL" "$PROJECT_DIR"
 git -C "$PROJECT_DIR" checkout "$REPO_COMMIT"
 cd "$PROJECT_DIR"
+python3 scripts/check_gcp_budget.py \
+  --hours "$PROJECTED_HOURS" \
+  --hourly-rate "$SPOT_RATE_USD_PER_HOUR" \
+  --budget 30.00
 python3 -m pip install --no-cache-dir \
   'transformers>=4.47' 'safetensors>=0.4' 'pyyaml>=6.0' \
   'pillow>=10.0' 'numpy>=1.26' 'tqdm>=4.66' 'psutil>=5.9' \
@@ -89,6 +94,8 @@ timeout --signal=TERM --kill-after=30s "${RUN_SECONDS}s" \
   python3 -u scripts/run_real_ablations.py \
     --model-id "$NEMOTRON_MODEL_ID" \
     --device cuda \
+    --corpus-backend real \
+    --corpus-config configs/data/real_corpus.yaml \
     --total-tokens 10000000 \
     --evaluate-proxy-winner \
     --sequence-length 1024 \

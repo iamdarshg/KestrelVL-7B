@@ -50,7 +50,7 @@ class KestrelOutput:
     logits: torch.Tensor
     loss: torch.Tensor | None = None
     past_key_values: KestrelCache | None = None
-    hidden_states: torch.Tensor | None = None
+    hidden_states: tuple[torch.Tensor, ...] | None = None
 
 
 class KestrelForCausalLM(nn.Module):
@@ -153,6 +153,7 @@ class KestrelForCausalLM(nn.Module):
         past_key_values: KestrelCache | None = None,
         return_dict: bool = True,
         logits_to_keep: int | None = None,
+        output_hidden_states: bool = False,
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         x = self.embed_tokens(input_ids)
         prefix = 0
@@ -168,8 +169,11 @@ class KestrelForCausalLM(nn.Module):
             start = past_key_values.length(0) if past_key_values is not None else 0
             position_ids = torch.arange(start, start + x.shape[1], device=x.device).view(1, -1).expand(x.shape[0], -1)
         branch = None
+        hidden_states: list[torch.Tensor] = [x] if output_hidden_states else []
         for layer in self.layers:
             x, branch = layer(x, position_ids, past_key_values)
+            if output_hidden_states:
+                hidden_states.append(x)
         normalized = self.norm(x)
         if logits_to_keep is not None:
             if logits_to_keep < 1:
@@ -179,7 +183,12 @@ class KestrelForCausalLM(nn.Module):
         loss = None
         if labels is not None:
             loss = F.cross_entropy(logits[:, :-1].reshape(-1, logits.shape[-1]), labels[:, 1:].reshape(-1), ignore_index=-100)
-        output = KestrelOutput(logits=logits, loss=loss, past_key_values=past_key_values)
+        output = KestrelOutput(
+            logits=logits,
+            loss=loss,
+            past_key_values=past_key_values,
+            hidden_states=tuple(hidden_states) if output_hidden_states else None,
+        )
         return output if return_dict else (logits, loss)
 
     @torch.no_grad()

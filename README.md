@@ -32,6 +32,31 @@ SFT/RL launchers refuse to proceed unless the recovery gate is present and
 passing. Local ablations are architecture/recovery proxies, not public
 benchmark claims.
 
+The production architecture-selection path now defaults to the governed real
+stream in `configs/data/real_corpus.yaml`. Its required composition is
+Stack-Edu 35%, RefineCode 25%, Stack/Stack-v2 20%, technical/docs 10%, and
+code-history/diffs 10%. The stream records source revisions, licenses,
+repository-stable split assignments, content hashes, duplicate decisions,
+contamination status, post-split FIM, and resumable cursors. It fails closed
+when a source is metadata-only, lacks an approved content resolver, or has no
+licensed local export. The old `CompositionLockedCorpus` remains available
+only for explicit synthetic unit/smoke tests.
+
+Teacher-relative recovery instrumentation is in `src/eval/recovery.py` and the
+current gate is intentionally blocked in `reports/reconstruction_gate.json`.
+No causal Nemotron architecture winner or 95% teacher-retention claim exists
+yet. The prior L4 result is a non-selective pipeline demonstration and is
+preserved as historical evidence.
+
+Before any paid run, inspect `reports/costs/GCP_BUDGET_STATUS.md` and run:
+
+```powershell
+python scripts/check_gcp_budget.py --hours 3 --hourly-rate 0.423956
+```
+
+The real ablation runner refuses to use synthetic data unless
+`--corpus-backend synthetic` is explicitly supplied.
+
 ## One-command local smoke inference
 
 ```powershell

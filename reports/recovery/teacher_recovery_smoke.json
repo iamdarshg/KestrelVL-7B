@@ -1,0 +1,29 @@
+{
+  "token_count": 31,
+  "teacher_nll": 5.749612331390381,
+  "candidate_nll": 5.749612331390381,
+  "delta_nll": 0.0,
+  "forward_kl_teacher_to_candidate": 0.0,
+  "reverse_kl_candidate_to_teacher": 0.0,
+  "hidden_state": {
+    "0": {
+      "cosine": 1.0,
+      "normalized_reconstruction_error": 0.0
+    },
+    "-1": {
+      "cosine": 1.0,
+      "normalized_reconstruction_error": 0.0
+    }
+  },
+  "mhc": {
+    "modules": 8,
+    "max_row_sum_error": 0.0,
+    "max_column_sum_error": 0.0,
+    "max_nonfinite": 0
+  },
+  "finite": true,
+  "teacher_capability_retention": null,
+  "gate_status": "not_evaluable_without_held_out_capability_scores",
+  "evidence_label": "local_tiny_identical_teacher_candidate_smoke",
+  "real_data_gate": false
+}

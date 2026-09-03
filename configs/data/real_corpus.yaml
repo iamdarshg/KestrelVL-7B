@@ -1,0 +1,70 @@
+name: kestrel-final-cpt-real-v1
+description: >-
+  Governed real streaming corpus for architecture selection. The five source
+  categories and weights are locked to the final CPT mixture. Metadata-only
+  Hugging Face indexes intentionally fail closed until an explicit content
+  resolver or a licensed local export is supplied.
+manifest_version: real-stream-v1
+tokenizer_id: nvidia/OpenReasoning-Nemotron-7B
+seed: 20260831
+sequence_length: 1024
+source_block_tokens: 256
+sources:
+  stack-edu:
+    weight: 0.35
+    kind: hf_streaming
+    uri: HuggingFaceTB/stack-edu
+    revision: main
+    split: train
+    dataset_config: Python
+    content_resolver: softwareheritage_s3
+    text_field: text
+    required_license: true
+  refinecode:
+    weight: 0.25
+    kind: hf_streaming
+    uri: OpenCoder-LLM/RefineCode-code-corpus-meta
+    revision: main
+    split: train
+    content_resolver: softwareheritage_s3
+    text_field: text
+    required_license: true
+  stack-v2:
+    weight: 0.20
+    kind: hf_streaming
+    uri: bigcode/the-stack-v2-dedup
+    revision: main
+    split: train
+    dataset_config: Python
+    content_resolver: softwareheritage_s3
+    text_field: text
+    required_license: true
+  docs:
+    weight: 0.10
+    kind: jsonl
+    uri: data/raw/real_corpus/docs.jsonl
+    revision: local-manifest-required
+    split: train
+    text_field: text
+    required_license: true
+  history:
+    weight: 0.10
+    kind: jsonl
+    uri: data/raw/real_corpus/history.jsonl
+    revision: local-manifest-required
+    split: train
+    text_field: text
+    required_license: true
+transforms:
+  fim_rate: 0.35
+governance:
+  architecture_validation_fraction: 0.02
+  recovery_validation_fraction: 0.02
+  min_chars: 32
+  max_chars: 2000000
+  dedup_jaccard_threshold: 0.92
+  held_out_ids: []
+  require_provenance: true
+  exclude_contaminated: true
+  exclude_near_duplicates: true
+  benchmark_test_sets_are_held_out: true

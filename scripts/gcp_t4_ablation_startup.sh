@@ -15,6 +15,7 @@ if [[ -z "$DEADLINE_EPOCH" ]]; then
 fi
 DEADLINE_EPOCH="${DEADLINE_EPOCH:-0}"
 REPORT_DIR="$PROJECT_DIR/reports/ablations"
+PROJECTED_HOURS="${KESTREL_PROJECTED_HOURS:-3}"
 
 timestamp() { date --iso-8601=seconds; }
 echo "[$(timestamp)] startup begin host=$(hostname) deadline=${DEADLINE_EPOCH}"
@@ -28,6 +29,10 @@ rm -rf "$PROJECT_DIR"
 git clone --filter=blob:none "$REPO_URL" "$PROJECT_DIR"
 git -C "$PROJECT_DIR" checkout "$REPO_COMMIT"
 cd "$PROJECT_DIR"
+python3 scripts/check_gcp_budget.py \
+  --hours "$PROJECTED_HOURS" \
+  --hourly-rate 0.35 \
+  --budget 30.00
 python3 -m pip install --no-cache-dir \
   'transformers>=4.47' 'safetensors>=0.4' 'pyyaml>=6.0' \
   'pillow>=10.0' 'numpy>=1.26' 'tqdm>=4.66' 'psutil>=5.9' \
@@ -96,6 +101,8 @@ timeout --signal=TERM --kill-after=20s "${RUN_SECONDS}s" \
   python3 scripts/run_real_ablations.py \
     --model-id "$NEMOTRON_MODEL_ID" \
     --device cuda \
+    --corpus-backend real \
+    --corpus-config configs/data/real_corpus.yaml \
     --total-tokens 10000000 \
     --sequence-length 1024 \
     --max-rss-gib 0 \

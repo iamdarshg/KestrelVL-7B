@@ -12,6 +12,7 @@ mlruns/
 data/cache/
 data/raw/
 data/hf_cache/
+data/provenance.sqlite*
 checkpoints/*/
 !checkpoints/.gitkeep
 reports/runtime/

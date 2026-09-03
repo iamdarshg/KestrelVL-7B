@@ -1,8 +1,8 @@
 {
   "status": "fail",
   "local_only": true,
-  "generated_at": 1788359924.3282225,
-  "git_commit": "ddb75ec0c7aca90eb9dc522245fa2f6baca14f34",
+  "generated_at": 1788464871.7002344,
+  "git_commit": "9877c5ebe4a4ee5f67c690390b91ff94609b598d",
   "gates": [
     {
       "name": "local_artifacts",
@@ -18,9 +18,9 @@
         "-q"
       ],
       "returncode": 0,
-      "elapsed_seconds": 21.93767570000091,
+      "elapsed_seconds": 29.74503939999704,
       "passed": true,
-      "stdout_tail": ".....................................                                    [100%]\n37 passed in 16.66s\n"
+      "stdout_tail": "............................................                             [100%]\n44 passed in 24.32s\n"
     },
     {
       "name": "compileall",
@@ -34,7 +34,7 @@
         "tests"
       ],
       "returncode": 0,
-      "elapsed_seconds": 0.6679659000001266,
+      "elapsed_seconds": 0.5651098000016646,
       "passed": true
     },
     {
@@ -51,7 +51,7 @@
         "concise"
       ],
       "returncode": 0,
-      "elapsed_seconds": 0.5267765000007785,
+      "elapsed_seconds": 0.42703560000518337,
       "passed": true,
       "stdout_tail": "All checks passed!\n"
     },
@@ -65,7 +65,7 @@
         "--dry-run"
       ],
       "returncode": 0,
-      "elapsed_seconds": 7.1726094000005105,
+      "elapsed_seconds": 9.337382999998226,
       "passed": true,
       "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_single_l4.yaml\",\n  \"name\": \"gcp_single_l4\",\n  \"machine_type\": \"g2-standard-12\",\n  \"accelerator\": \"nvidia-l4\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 8192,\n  \"gradient_accumulation_steps\": 1,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
     },
@@ -79,27 +79,9 @@
         "--dry-run"
       ],
       "returncode": 0,
-      "elapsed_seconds": 6.034021399998892,
+      "elapsed_seconds": 8.75078609999764,
       "passed": true,
       "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_final_rtx_pro_6000.yaml\",\n  \"name\": \"gcp_final_rtx_pro_6000\",\n  \"machine_type\": \"g4-standard-48\",\n  \"accelerator\": \"rtx-pro-6000\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 32768,\n  \"gradient_accumulation_steps\": 32,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
-    },
-    {
-      "name": "tipsv2_cuda_smoke",
-      "command": [
-        "C:\\Program Files\\Python312\\python.exe",
-        "scripts/verify_vision_checkpoint.py",
-        "data/raw/tipsv2-l14",
-        "--device",
-        "cuda",
-        "--max-tiles",
-        "1",
-        "--max-rss-gib",
-        "1.3"
-      ],
-      "returncode": 86,
-      "elapsed_seconds": 77.0653095000016,
-      "passed": false,
-      "stderr_tail": "WARNING: All log messages before absl::InitializeLog() is called are written to STDERR\nI0000 00:00:1788359874.269392  212728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.\nWARNING: All log messages before absl::InitializeLog() is called are written to STDERR\nI0000 00:00:1788359907.072220  212728 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.\nC:\\Users\\Darsh Gupta\\.cache\\huggingface\\modules\\transformers_modules\\tipsv2-l14\\image_encoder.py:175: UserWarning: xFormers is not available (SwiGLU)\n  warnings.warn(\"xFormers is not available (SwiGLU)\")\nRSS watchdog stopping process: 1.296 GiB > 1.280 GiB\n"
     },
     {
       "name": "real_multimodal_graft_smoke",

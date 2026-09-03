@@ -1,0 +1,9 @@
+{
+  "status": "blocked",
+  "teacher_capability_retention": null,
+  "minimum_required": 0.95,
+  "evidence_label": "no_real_teacher_recovery_run",
+  "reason": "The real governed corpus is not yet content-resolved and no held-out capability evaluation has been run. Diagnostic teacher-relative metrics exist, but they cannot be converted into the legacy capability-retention scalar.",
+  "local_diagnostic": "reports/recovery/teacher_recovery_smoke.json",
+  "next_required_step": "Resolve licensed text content for all five source categories, freeze the recovery split, then evaluate initialized and reconstructed real Nemotron candidates against the untouched teacher."
+}

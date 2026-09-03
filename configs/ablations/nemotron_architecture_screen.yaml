@@ -1,0 +1,42 @@
+name: kestrel-nemotron-causal-screen-v1
+selection_metric: held_out_real_data_teacher_relative_quality
+hard_budget_usd: 30.0
+stage_a:
+  purpose: eliminate clearly inferior causal candidates using the same real stream
+  total_tokens: 1000000
+  candidates:
+    - name: mhc_on_kv1_hca128_topk128
+      mhc_enabled: true
+      num_key_value_heads: 1
+      hca_compression_ratio: 128
+      index_topk: 128
+    - name: mhc_on_kv2_hca128_topk64
+      mhc_enabled: true
+      num_key_value_heads: 2
+      hca_compression_ratio: 128
+      index_topk: 64
+    - name: mhc_on_kv2_hca128_topk128
+      mhc_enabled: true
+      num_key_value_heads: 2
+      hca_compression_ratio: 128
+      index_topk: 128
+    - name: mhc_on_kv2_hca64_topk256
+      mhc_enabled: true
+      num_key_value_heads: 2
+      hca_compression_ratio: 64
+      index_topk: 256
+  allocation: equal_tokens_per_candidate
+stage_b:
+  purpose: confirm finalists with equal opportunity on the frozen real stream
+  finalists: 2
+  tokens_per_candidate: 2400000
+matched_control:
+  enabled_if_budget_allows: true
+  differs_only_by: mhc_enabled
+  base_candidate: mhc_on_kv2_hca128_topk128
+  mhc_enabled: false
+governance:
+  synthetic_corpus_allowed: false
+  require_real_corpus_backend: true
+  require_frozen_recovery_split: true
+  require_teacher_relative_metrics: true

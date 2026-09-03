@@ -1,4 +1,6 @@
 from pathlib import Path
+import dataclasses
+import json
 
 import pytest
 import torch
@@ -7,7 +9,11 @@ from data.corpus import CompositionLockedCorpus, CorpusSpec
 from data.contamination import ContaminationIndex, normalize_code
 from data.fim import make_fim, should_fim
 from data.manifests import ManifestStore, SampleRecord
+from data.real_corpus import RealCorpusSpec, RealSourceSpec, RealStreamingCorpus
+from eval.recovery import evaluate_teacher_recovery
+from model import KestrelConfig, KestrelForCausalLM
 from training.checkpoint import SafeCheckpointManager
+from training.budget import check_budget, conservative_cost
 from training.muon import Muon
 
 
@@ -119,3 +125,67 @@ def test_safe_checkpoint_round_trip_has_no_pickle_files(tmp_path: Path) -> None:
             manager.load(checkpoint, restored_model)
     finally:
         (checkpoint / "model.safetensors").write_bytes(model_bytes)
+
+
+def _real_fixture_spec(tmp_path: Path, revision: str = "fixture-v1") -> RealCorpusSpec:
+    sources = []
+    for index, name in enumerate(("stack-edu", "refinecode", "stack-v2", "docs", "history")):
+        path = tmp_path / f"{name}.jsonl"
+        path.write_text(
+            json.dumps({
+                "id": f"{name}-0", "repo_name": f"repo-{name}",
+                "license": "MIT", "text": f"def {name.replace('-', '_')}_zero(): return {index}\n"
+            }) + "\n" + json.dumps({
+                "id": f"{name}-1", "repo_name": f"repo-{name}-one",
+                "license": "MIT", "text": f"def {name.replace('-', '_')}_one(): return {index + 1}\n"
+            }) + "\n",
+            encoding="utf-8",
+        )
+        sources.append(RealSourceSpec(name, (0.35, 0.25, 0.20, 0.10, 0.10)[index], "jsonl", str(path), revision))
+    return RealCorpusSpec(
+        "fixture", 7, 32, 1, 0.35, "fixture-tokenizer", tuple(sources),
+        architecture_validation_fraction=0.0, recovery_validation_fraction=0.0, min_chars=1,
+    )
+
+
+def test_real_corpus_fingerprint_and_resume_are_deterministic(tmp_path: Path) -> None:
+    spec = _real_fixture_spec(tmp_path)
+    changed = _real_fixture_spec(tmp_path, revision="fixture-v2")
+    assert spec.fingerprint() != changed.fingerprint()
+    first = RealStreamingCorpus(spec)
+    record_a, text_a = first.next_record(0)
+    state = first.state_dict()
+    second = RealStreamingCorpus(spec)
+    second.load_state_dict(state)
+    assert record_a.source == "stack-edu"
+    assert text_a.startswith("def stack_edu_zero")
+    assert second.state_dict()["manifest_fingerprint"] == spec.fingerprint()
+
+
+def test_real_corpus_fails_closed_for_missing_source(tmp_path: Path) -> None:
+    spec = _real_fixture_spec(tmp_path)
+    missing = RealSourceSpec("stack-edu", 0.35, "jsonl", str(tmp_path / "missing.jsonl"), "v1")
+    spec = dataclasses.replace(spec, source_specs=(missing,) + spec.source_specs[1:])
+    with pytest.raises(RuntimeError, match="missing"):
+        RealStreamingCorpus(spec).next_record(0)
+
+
+def test_recovery_metrics_are_zero_for_identical_tiny_models() -> None:
+    config = KestrelConfig.tiny(use_vision=False)
+    teacher = KestrelForCausalLM(config).eval()
+    candidate = KestrelForCausalLM(config).eval()
+    candidate.load_state_dict(teacher.state_dict())
+    ids = torch.randint(0, config.vocab_size, (1, 16))
+    report = evaluate_teacher_recovery(teacher, candidate, ids)
+    assert report["finite"] is True
+    assert abs(float(report["delta_nll"])) < 1e-6
+    assert float(report["forward_kl_teacher_to_candidate"]) < 1e-6
+    assert float(report["hidden_state"]["0"]["cosine"]) > 0.99999
+    assert report["teacher_capability_retention"] is None
+
+
+def test_budget_guard_counts_conservative_projection(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.json"
+    ledger.write_text(json.dumps({"entries": [{"estimated_cost_usd": 29.0}]}), encoding="utf-8")
+    decision = check_budget(ledger, conservative_cost(1.0, 1.0), 30.0)
+    assert decision.allowed is False

@@ -1,0 +1,56 @@
+{
+  "schema_version": "gcp-ledger-v1",
+  "budget_usd": 30.0,
+  "currency": "USD",
+  "pricing_policy": "Conservative reference estimate; actual billing is unavailable. Prior authorized caps are counted rather than treated as free.",
+  "entries": [
+    {
+      "experiment": "gcp-t4-pretraining-blocked-2026-09-03",
+      "gpu": "NVIDIA Tesla T4",
+      "machine": "n1-standard-4",
+      "provisioning": "SPOT",
+      "gpu_hours": 0.0,
+      "reference_hourly_price_usd": 0.20,
+      "estimated_cost_usd": 0.20,
+      "purpose": "blocked real-Nemotron ablation startup; no valid score",
+      "commit": "c70ecfc",
+      "status": "failed_before_training",
+      "source_report": "reports/ablations/gcp_t4_attempt_2026-09-03.json",
+      "cost_basis": "conservative authorized cap; exact billing unavailable"
+    },
+    {
+      "experiment": "gcp-t4-partial-real-screen-2026-09-03",
+      "gpu": "NVIDIA Tesla T4",
+      "machine": "n1-standard-4",
+      "provisioning": "SPOT",
+      "gpu_hours": 0.0,
+      "reference_hourly_price_usd": 0.35,
+      "estimated_cost_usd": 1.00,
+      "purpose": "partial real-Nemotron ablation; 20 steps only, ranking invalid",
+      "commit": "c70ecfc",
+      "status": "aborted_incomplete",
+      "source_report": "reports/ablations/gcp_t4_attempt_2026-09-03_dollar.json",
+      "cost_basis": "conservative authorized cap; exact billing unavailable"
+    },
+    {
+      "experiment": "gcp-l4-single-real-option-2026-09-03",
+      "gpu": "NVIDIA L4",
+      "machine": "g2-standard-4",
+      "provisioning": "SPOT",
+      "gpu_hours": 9.953966447041665,
+      "reference_hourly_price_usd": 0.423956,
+      "estimated_cost_usd": 4.220043799022,
+      "purpose": "real Nemotron pipeline demonstration; one candidate on synthetic corpus",
+      "commit": "9877c5e",
+      "status": "completed_nonselective",
+      "source_report": "reports/ablations/gcp_l4_real_option_results.json",
+      "cost_basis": "reported GPU-hours multiplied by recorded reference L4 rate"
+    }
+  ],
+  "summary": {
+    "conservative_spent_usd": 5.420043799022,
+    "remaining_usd": 24.579956200978,
+    "selection_eligible_spend_usd": 0.0,
+    "note": "No new paid run is authorized by this file until the real corpus and teacher-relative evaluation gates pass locally."
+  }
+}
