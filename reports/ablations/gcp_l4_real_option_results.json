@@ -1,0 +1,230 @@
+{
+  "protocol": {
+    "model_id": "nvidia/OpenReasoning-Nemotron-7B",
+    "revision": null,
+    "device": "cuda",
+    "corpus_config": "configs/data/final_corpus.yaml",
+    "total_tokens": 10000000,
+    "validation_tokens": 100000,
+    "candidate_index": null,
+    "evaluate_proxy_winner": true,
+    "enable_mhc": true,
+    "sequence_length": 1024,
+    "muon_lr": 0.002,
+    "adamw_lr": 1e-05,
+    "weight_decay": 0.01,
+    "muon_ns_steps": 5,
+    "checkpoint_interval": 20,
+    "max_checkpoints": 1,
+    "gradient_checkpointing": true,
+    "trainable_layer_start": 0,
+    "debug_finite": false,
+    "training_logit_stride": 1,
+    "checkpoint_root": "checkpoints/gcp_l4_real_option",
+    "durable_checkpoint_uri": null,
+    "final_archive_root": null,
+    "init_cache": null,
+    "output": "reports/ablations/gcp_l4_real_option_results.json",
+    "local_gpu_hourly_cost": 0.423956,
+    "max_rss_gib": null,
+    "seed": 20260831,
+    "resume": true
+  },
+  "corpus": {
+    "name": "kestrel-final-cpt-v1",
+    "total_ablation_token_budget": 10000000,
+    "validation_token_budget": 100000,
+    "seed": 20260831,
+    "sequence_length": 1024,
+    "source_block_tokens": 256,
+    "fim_rate": 0.35,
+    "generator_version": "generic-code-v2",
+    "sources": {
+      "stack-edu": 0.35,
+      "refinecode": 0.25,
+      "stack-v2": 0.2,
+      "docs": 0.1,
+      "history": 0.1
+    }
+  },
+  "corpus_fingerprint": "038743713d3d5983b5a758b462f41d218bdc6da622e1c1af57609573f5f8ca88",
+  "candidate_count": 1,
+  "corpus_candidate_count": 4,
+  "results": [
+    {
+      "option_index": 4,
+      "name": "proxy_shape_mhc_enabled_kv2_hca128_topk64",
+      "num_key_value_heads": 2,
+      "hca_compression_ratio": 128,
+      "index_topk": 64,
+      "mhc_enabled": true,
+      "selection_source": "proxy shape from reports/ablations/final_architecture.json; mHC enabled by explicit run flag",
+      "corpus_name": "kestrel-final-cpt-v1",
+      "corpus_fingerprint": "038743713d3d5983b5a758b462f41d218bdc6da622e1c1af57609573f5f8ca88",
+      "global_token_budget": 10000000,
+      "candidate_token_budget": 2500000,
+      "train_tokens": 2400000,
+      "validation_tokens": 99231,
+      "train_loss": 3.072022328659166,
+      "validation_loss": 0.3113810078999431,
+      "validation_perplexity": 1.3653093157349647,
+      "train_seconds": 35834.279209349996,
+      "train_tokens_per_second": 66.97497627840619,
+      "gpu_hours": 9.953966447041665,
+      "estimated_cost_usd": 4.2200437990219966,
+      "peak_vram_gib": 8.410961627960205,
+      "parameter_count": 4295948840,
+      "trainable_parameter_count": 354147368,
+      "muon_matrix_parameters": 354031840,
+      "minimal_adamw_vector_parameters": 115528,
+      "muon_ns_steps": 5,
+      "trainable_layer_start": 0,
+      "compute_dtype": "torch.bfloat16",
+      "training_logit_stride": 1,
+      "checkpoint": "/opt/kestrel/checkpoints/gcp_l4_real_option/04_proxy_shape_mhc_enabled_kv2_hca128_topk64/step_00002344",
+      "optimizer_snapshot_retained": true,
+      "load_info": {
+        "model_id": "nvidia/OpenReasoning-Nemotron-7B",
+        "revision": null,
+        "quantized": true,
+        "dtype": "torch.bfloat16",
+        "parameter_count": 4295948840,
+        "trainable_parameter_count": 354147368,
+        "initialization_errors": [
+          {
+            "q_relative_error": 0.5542274117469788,
+            "o_relative_error": 0.5040404796600342
+          },
+          {
+            "q_relative_error": 0.40966182947158813,
+            "o_relative_error": 0.460955411195755
+          },
+          {
+            "q_relative_error": 0.6043571829795837,
+            "o_relative_error": 0.4854736626148224
+          },
+          {
+            "q_relative_error": 0.6152068972587585,
+            "o_relative_error": 0.4874109923839569
+          },
+          {
+            "q_relative_error": 0.6077283024787903,
+            "o_relative_error": 0.4926559329032898
+          },
+          {
+            "q_relative_error": 0.623181939125061,
+            "o_relative_error": 0.47298547625541687
+          },
+          {
+            "q_relative_error": 0.6371558308601379,
+            "o_relative_error": 0.4719533920288086
+          },
+          {
+            "q_relative_error": 0.6345768570899963,
+            "o_relative_error": 0.4554721415042877
+          },
+          {
+            "q_relative_error": 0.6329827904701233,
+            "o_relative_error": 0.45469948649406433
+          },
+          {
+            "q_relative_error": 0.6183701753616333,
+            "o_relative_error": 0.4449426829814911
+          },
+          {
+            "q_relative_error": 0.6457678079605103,
+            "o_relative_error": 0.46186891198158264
+          },
+          {
+            "q_relative_error": 0.6211823225021362,
+            "o_relative_error": 0.4702935516834259
+          },
+          {
+            "q_relative_error": 0.6304142475128174,
+            "o_relative_error": 0.47685009241104126
+          },
+          {
+            "q_relative_error": 0.6313955187797546,
+            "o_relative_error": 0.46740177273750305
+          },
+          {
+            "q_relative_error": 0.5953145623207092,
+            "o_relative_error": 0.42542460560798645
+          },
+          {
+            "q_relative_error": 0.6091675162315369,
+            "o_relative_error": 0.4552679657936096
+          },
+          {
+            "q_relative_error": 0.6101680994033813,
+            "o_relative_error": 0.4539714455604553
+          },
+          {
+            "q_relative_error": 0.6182854175567627,
+            "o_relative_error": 0.4658862054347992
+          },
+          {
+            "q_relative_error": 0.6089580655097961,
+            "o_relative_error": 0.41174086928367615
+          },
+          {
+            "q_relative_error": 0.6201987266540527,
+            "o_relative_error": 0.42750152945518494
+          },
+          {
+            "q_relative_error": 0.6194679141044617,
+            "o_relative_error": 0.45308688282966614
+          },
+          {
+            "q_relative_error": 0.626223623752594,
+            "o_relative_error": 0.41603735089302063
+          },
+          {
+            "q_relative_error": 0.6107276678085327,
+            "o_relative_error": 0.44833099842071533
+          },
+          {
+            "q_relative_error": 0.6546438336372375,
+            "o_relative_error": 0.505338728427887
+          },
+          {
+            "q_relative_error": 0.6629284024238586,
+            "o_relative_error": 0.4413088262081146
+          },
+          {
+            "q_relative_error": 0.6691802144050598,
+            "o_relative_error": 0.48618581891059875
+          },
+          {
+            "q_relative_error": 0.6250408887863159,
+            "o_relative_error": 0.49440160393714905
+          },
+          {
+            "q_relative_error": 0.6117875576019287,
+            "o_relative_error": 0.5165700316429138
+          }
+        ],
+        "vision_loaded": false,
+        "vision_model_id": null,
+        "cpu_lm_head": false,
+        "lm_head_skipped": false
+      },
+      "precision": {
+        "forward_weight_storage": "q4",
+        "compute_dtype": "torch.bfloat16",
+        "master_weight_dtype": "torch.bfloat16",
+        "gradient_dtype": "torch.bfloat16",
+        "allow_fp32_master": false,
+        "trainable_parameters": 354147368,
+        "fp32_trainable_parameters": 0
+      },
+      "optimizer": {
+        "muon_parameter_count": 354031840,
+        "adamw_parameter_count": 115528,
+        "adamw_fraction": 0.0003262144814245803,
+        "state_bytes": 694551648,
+        "state_tensors": 476
+      }
+    }
+  ]
+}
