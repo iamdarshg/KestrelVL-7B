@@ -1,0 +1,73 @@
+{
+  "status": "incomplete_budgeted_real_ablation",
+  "date": "2026-09-03",
+  "project": "project-ba289c9c-3c25-4e15-9dc",
+  "instance": "kestrel-t4-ablation-20260903-7",
+  "zone": "asia-east1-c",
+  "machine_type": "n1-standard-4",
+  "accelerator": "nvidia-tesla-t4",
+  "provisioning_model": "SPOT",
+  "authorized_budget_usd": 1.0,
+  "model_id": "nvidia/OpenReasoning-Nemotron-7B",
+  "model_weights": "real Nemotron-7B weights from the Hugging Face snapshot",
+  "global_token_budget": 10000000,
+  "candidate_count": 4,
+  "tokens_per_candidate_required": 2500000,
+  "training_tokens_per_candidate_required": 2400000,
+  "validation_tokens_per_candidate_required": 100000,
+  "screening_profile": {
+    "sequence_length": 1024,
+    "training_logit_stride": 16,
+    "trainable_layer_start": 24,
+    "gradient_checkpointing": true,
+    "optimizer": "Muon with minimal AdamW vector bucket",
+    "muon_ns_steps": 1,
+    "corpus_fingerprint": "038743713d3d5983b5a758b462f41d218bdc6da622e1c1af57609573f5f8ca88"
+  },
+  "candidates": [
+    {
+      "name": "target_mhc_topk512",
+      "num_key_value_heads": 1,
+      "hca_compression_ratio": 128,
+      "index_topk": 512,
+      "mhc_enabled": true,
+      "status": "partial_checkpoint_only",
+      "optimizer_steps": 20,
+      "training_tokens": 20480,
+      "validation_tokens": 0,
+      "train_loss_at_checkpoint": 11.137557458877563,
+      "checkpoint": "checkpoints/gcp_t4_real_ablations_suffix/00_target_mhc_topk512/step_00000020"
+    },
+    {
+      "name": "local_mhc_topk128",
+      "status": "not_reached"
+    },
+    {
+      "name": "two_kv_hca64_topk256",
+      "status": "not_reached"
+    },
+    {
+      "name": "no_mhc_topk256",
+      "status": "not_reached"
+    }
+  ],
+  "observed_rate": {
+    "candidate": "target_mhc_topk512",
+    "steps": 20,
+    "tokens": 20480,
+    "wall_clock_minutes_approx": 16,
+    "tokens_per_second_approx": 21.3,
+    "adamw_parameter_fraction": 0.0003513059936478974,
+    "trainable_parameters": 47001760,
+    "peak_vram_gib_approx": 7.33,
+    "gpu_utilization_percent": 99
+  },
+  "scores_valid": false,
+  "winner": null,
+  "reconstruction_gate_created": false,
+  "interpretation": "The run used real Nemotron weights and the locked corpus, but the authorized T4 window cannot complete four 2.5M-token candidates at the measured rate. No ranking or architecture selection may be inferred from this partial checkpoint.",
+  "preserved_artifacts": [
+    "checkpoints/gcp_t4_real_ablations/svd_cache_gcp_t4/svd_init.pt",
+    "checkpoints/gcp_t4_real_ablations_suffix/00_target_mhc_topk512/step_00000020"
+  ]
+}
