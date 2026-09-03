@@ -1,8 +1,8 @@
 {
   "status": "fail",
   "local_only": true,
-  "generated_at": 1788464871.7002344,
-  "git_commit": "9877c5ebe4a4ee5f67c690390b91ff94609b598d",
+  "generated_at": 1788465535.1929545,
+  "git_commit": "6b53caa053d48f859e992f9c08e367ad1ab62dd2",
   "gates": [
     {
       "name": "local_artifacts",
@@ -18,9 +18,9 @@
         "-q"
       ],
       "returncode": 0,
-      "elapsed_seconds": 29.74503939999704,
+      "elapsed_seconds": 34.29276740000205,
       "passed": true,
-      "stdout_tail": "............................................                             [100%]\n44 passed in 24.32s\n"
+      "stdout_tail": "............................................                             [100%]\n44 passed in 26.93s\n"
     },
     {
       "name": "compileall",
@@ -34,7 +34,7 @@
         "tests"
       ],
       "returncode": 0,
-      "elapsed_seconds": 0.5651098000016646,
+      "elapsed_seconds": 0.3901862999991863,
       "passed": true
     },
     {
@@ -51,7 +51,7 @@
         "concise"
       ],
       "returncode": 0,
-      "elapsed_seconds": 0.42703560000518337,
+      "elapsed_seconds": 0.38023529999918537,
       "passed": true,
       "stdout_tail": "All checks passed!\n"
     },
@@ -65,7 +65,7 @@
         "--dry-run"
       ],
       "returncode": 0,
-      "elapsed_seconds": 9.337382999998226,
+      "elapsed_seconds": 10.025240000002668,
       "passed": true,
       "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_single_l4.yaml\",\n  \"name\": \"gcp_single_l4\",\n  \"machine_type\": \"g2-standard-12\",\n  \"accelerator\": \"nvidia-l4\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 8192,\n  \"gradient_accumulation_steps\": 1,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
     },
@@ -79,7 +79,7 @@
         "--dry-run"
       ],
       "returncode": 0,
-      "elapsed_seconds": 8.75078609999764,
+      "elapsed_seconds": 7.643929499994556,
       "passed": true,
       "stdout_tail": "{\n  \"profile\": \"D:\\\\CodeProjects\\\\KestrelVL-7B\\\\configs\\\\hardware\\\\gcp_final_rtx_pro_6000.yaml\",\n  \"name\": \"gcp_final_rtx_pro_6000\",\n  \"machine_type\": \"g4-standard-48\",\n  \"accelerator\": \"rtx-pro-6000\",\n  \"accelerator_count\": 1,\n  \"distributed\": \"single_gpu\",\n  \"expected_world_size\": 1,\n  \"per_device_micro_batch_size\": 1,\n  \"sequence_length\": 32768,\n  \"gradient_accumulation_steps\": 32,\n  \"mode\": \"train\",\n  \"model_id\": \"data/raw/nemotron\",\n  \"vision_model_id\": null,\n  \"load_in_4bit\": true,\n  \"note\": \"dry run only; no model loaded and no throughput claim\"\n}\n"
     },

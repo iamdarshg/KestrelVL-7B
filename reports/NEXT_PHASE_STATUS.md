@@ -1,7 +1,7 @@
 # Kestrel next-phase status
 
 Date: 2026-09-04  
-Repository HEAD at audit: `9877c5e`  
+Repository HEAD after implementation: `6b53caa`  
 Open GitHub issue: #1 remains open.
 
 ## 1. What changed
@@ -27,9 +27,15 @@ Open GitHub issue: #1 remains open.
 
 ## 2. What we learned
 
-The current local suite passes (`43 passed`). The identical tiny teacher/candidate
+The current local suite passes (`44 passed`). The identical tiny teacher/candidate
 recovery smoke produces finite outputs, zero delta NLL/KL, and cosine 1.0. That
 validates metric instrumentation, not Nemotron recovery.
+
+The final local preflight also passes compilation, targeted lint, the L4 profile
+dry-run, and the RTX PRO 6000 profile dry-run. The preflight remains overall
+`fail` only because the real multimodal graft smoke cannot find the expected
+TIPSv2 projector checkpoint pointer; this preserves the existing 1.3 GiB host-RSS
+evidence boundary rather than weakening it.
 
 The committed L4 run recorded about 9.954 GPU-hours and $4.2200 at its reference
 rate, but it was one candidate on the synthetic `generic-code-v2` stream. The
