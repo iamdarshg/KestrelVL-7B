@@ -6,7 +6,7 @@ exec > >(tee -a "$LOG") 2>&1
 
 PROJECT_DIR=/opt/kestrel
 REPO_URL="https://github.com/iamdarshg/KestrelVL-7B.git"
-REPO_COMMIT="7fda77e"
+REPO_COMMIT="2af9584"
 DEADLINE_EPOCH="${KESTREL_DEADLINE_EPOCH:-}"
 if [[ -z "$DEADLINE_EPOCH" ]]; then
   DEADLINE_EPOCH="$(curl -fsS -H 'Metadata-Flavor: Google' \
