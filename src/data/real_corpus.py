@@ -278,6 +278,18 @@ class RealStreamingCorpus:
         self._token_buffers: dict[str, list[int]] = {source.name: [] for source in spec.source_specs}
         self._token_cursor = 0
 
+    def validate_configuration(self) -> None:
+        """Fail before model construction when a local source is unavailable."""
+        for source in self.spec.source_specs:
+            if source.kind not in {"jsonl", "jsonl.gz", "hf_streaming"}:
+                raise StreamingCorpusError(f"unsupported real source kind: {source.kind}")
+            if source.kind in {"jsonl", "jsonl.gz"}:
+                path = Path(source.uri)
+                if not path.is_absolute():
+                    path = Path.cwd() / path
+                if not path.is_file():
+                    raise StreamingCorpusError(f"real corpus source is missing: {path}")
+
     def _iter_source(self, source: RealSourceSpec) -> Iterator[dict[str, Any]]:
         if source.kind in {"jsonl", "jsonl.gz"}:
             path = Path(source.uri)

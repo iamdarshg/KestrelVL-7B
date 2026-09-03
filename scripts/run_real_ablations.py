@@ -211,12 +211,19 @@ def run_option(
     device: torch.device,
 ) -> dict[str, object]:
     seed_all(args.seed)
+    provenance = None
+    if args.corpus_backend == "real":
+        provenance = ManifestStore(ROOT / "data/provenance.sqlite")
+        corpus: CompositionLockedCorpus | RealStreamingCorpus = RealStreamingCorpus(spec, provenance)  # type: ignore[arg-type]
+        corpus.validate_configuration()
     compute_dtype = (
         torch.bfloat16
         if device.type == "cuda" and torch.cuda.is_bf16_supported()
         else torch.float16
     )
     config = config_for(option)
+    if args.corpus_backend == "synthetic":
+        corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)  # type: ignore[arg-type]
     model, load_info = load_real_nemotron_transplant(
         config,
         model_id=args.model_id,
@@ -250,11 +257,6 @@ def run_option(
     model.debug_finite = args.debug_finite
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
-    if args.corpus_backend == "real":
-        provenance = ManifestStore(ROOT / "data/provenance.sqlite")
-        corpus: CompositionLockedCorpus | RealStreamingCorpus = RealStreamingCorpus(spec, provenance)  # type: ignore[arg-type]
-    else:
-        corpus = CompositionLockedCorpus(spec, config.vocab_size, tokenizer=tokenizer)  # type: ignore[arg-type]
     checkpoint_root = Path(args.checkpoint_root)
     if not checkpoint_root.is_absolute():
         checkpoint_root = ROOT / checkpoint_root
