@@ -1,10 +1,12 @@
-"""Run the four real-Nemotron local architecture candidates.
+"""Run the real-Nemotron architecture candidates.
 
 The 10M-token budget is global across candidates: each of four candidates
 receives the same 2.5M-token slice, with 2.4M train and 100K held-out tokens.
 All candidates use the exact same composition-locked stream.  Only validation
 loss/perplexity selects the winner; throughput and memory are reported as
-constraints, not quality substitutes.
+constraints, not quality substitutes.  ``--candidate-index`` provides a
+budgeted single-candidate mode for real-hardware screening without changing
+the corpus fingerprint or the per-candidate token allocation.
 """
 
 from __future__ import annotations
@@ -64,6 +66,18 @@ OPTIONS: tuple[dict[str, object], ...] = (
         "mhc_enabled": False,
     },
 )
+
+# This is the earlier tiny-proxy winner.  It is intentionally not inserted
+# into the four-way 10M-token allocation: evaluating it on real Nemotron is a
+# separate confirmation run, not a redefinition of the locked ablation.
+PROXY_WINNER: dict[str, object] = {
+    "name": "proxy_winner_kv2_hca128_topk64_no_mhc",
+    "num_key_value_heads": 2,
+    "hca_compression_ratio": 128,
+    "index_topk": 64,
+    "mhc_enabled": False,
+    "selection_source": "reports/ablations/final_architecture.json",
+}
 
 
 def retain_only_best_archive(results: list[dict[str, object]], archive_root: str | None) -> None:
@@ -428,6 +442,23 @@ def main() -> None:
     parser.add_argument("--corpus-config", default="configs/data/final_corpus.yaml")
     parser.add_argument("--total-tokens", type=int, default=10_000_000)
     parser.add_argument("--validation-tokens", type=int, default=100_000)
+    parser.add_argument(
+        "--candidate-index",
+        type=int,
+        default=None,
+        choices=range(len(OPTIONS)),
+        help="run only one candidate while preserving the global 10M-token corpus contract",
+    )
+    parser.add_argument(
+        "--evaluate-proxy-winner",
+        action="store_true",
+        help="evaluate the earlier tiny-proxy winner on real Nemotron as a single candidate",
+    )
+    parser.add_argument(
+        "--enable-mhc",
+        action="store_true",
+        help="for proxy evaluation, enable mHC while retaining the selected proxy dimensions",
+    )
     parser.add_argument("--sequence-length", type=int, default=1024)
     parser.add_argument("--muon-lr", type=float, default=0.002)
     parser.add_argument("--adamw-lr", type=float, default=1e-5)
@@ -502,13 +533,15 @@ def main() -> None:
         local_model = ROOT / "data/raw/nemotron"
         args.model_id = str(local_model) if (local_model / "model.safetensors.index.json").exists() else "nvidia/OpenReasoning-Nemotron-7B"
     validate_local_model_files(args.model_id)
-    if args.total_tokens < len(OPTIONS) * 4:
-        raise ValueError("total token budget is too small for four candidates")
     spec = CorpusSpec.from_yaml(ROOT / args.corpus_config)
     if spec.total_ablation_token_budget != args.total_tokens:
         raise ValueError("--total-tokens must equal total_ablation_token_budget in the final corpus config")
-    if args.total_tokens % len(OPTIONS):
+    if args.total_tokens < len(OPTIONS) * 4:
+        raise ValueError("total token budget is too small for the four-candidate corpus contract")
+    if args.candidate_index is None and args.total_tokens % len(OPTIONS):
         raise ValueError("total token budget must divide evenly across candidates")
+    if args.candidate_index is not None and args.evaluate_proxy_winner:
+        raise ValueError("--candidate-index and --evaluate-proxy-winner are mutually exclusive")
     device = torch.device(args.device)
     seed_all(args.seed)
     from transformers import AutoTokenizer
@@ -523,8 +556,25 @@ def main() -> None:
         local_files_only=Path(args.model_id).is_dir(),
     )
     results: list[dict[str, object]] = []
-    for index, option in enumerate(OPTIONS):
-        print(f"[{index + 1}/{len(OPTIONS)}] {option['name']}: {option}", flush=True)
+    proxy_option = dict(PROXY_WINNER)
+    if args.enable_mhc:
+        proxy_option.update(
+            {
+                "name": "proxy_shape_mhc_enabled_kv2_hca128_topk64",
+                "mhc_enabled": True,
+                "selection_source": "proxy shape from reports/ablations/final_architecture.json; mHC enabled by explicit run flag",
+            }
+        )
+    selected_options = (
+        [(len(OPTIONS), proxy_option)]
+        if args.evaluate_proxy_winner
+        else
+        [(args.candidate_index, OPTIONS[args.candidate_index])]
+        if args.candidate_index is not None
+        else list(enumerate(OPTIONS))
+    )
+    for ordinal, (index, option) in enumerate(selected_options, start=1):
+        print(f"[{ordinal}/{len(selected_options)}] {option['name']}: {option}", flush=True)
         result = run_option(args, index, option, spec, tokenizer, device)
         results.append(result)
         retain_only_best_archive(results, args.final_archive_root)
@@ -536,7 +586,8 @@ def main() -> None:
                     "protocol": vars(args),
                     "corpus": spec.to_dict(),
                     "corpus_fingerprint": spec.fingerprint(),
-                    "candidate_count": len(OPTIONS),
+                    "candidate_count": len(selected_options),
+                    "corpus_candidate_count": len(OPTIONS),
                     "results": results,
                 },
                 indent=2,
@@ -545,6 +596,9 @@ def main() -> None:
             + "\n",
             encoding="utf-8",
         )
+    if args.candidate_index is not None or args.evaluate_proxy_winner:
+        print("SINGLE_CANDIDATE_COMPLETE=" + json.dumps(results[0], sort_keys=True, default=str))
+        return
     winner = min(results, key=lambda item: float(item["validation_loss"]))
     final = {
         "selection": "lowest held-out validation loss; perplexity is derived",

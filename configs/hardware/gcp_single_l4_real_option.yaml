@@ -1,0 +1,41 @@
+name: gcp_single_l4_real_option
+purpose: one_complete_real_nemotron_candidate_under_hard_ten_usd_cap
+machine_type: g2-standard-4
+accelerator: nvidia-l4
+accelerator_count: 1
+distributed: single_gpu
+per_device_micro_batch_size: 1
+gradient_accumulation_steps: 1
+precision: bfloat16
+quantization: nf4
+forward_weight_storage: q4
+compute_dtype: bfloat16
+master_weight_dtype: bfloat16
+gradient_dtype: bfloat16
+allow_fp32_master: false
+optimizer: muon
+muon_momentum_dtype: bfloat16
+adamw_fallback: small_vectors_only
+attention:
+  sliding_window: 128
+  csa_compression_ratio: 4
+  hca_compression_ratio: 128
+  index_topk: 64
+  index_dtype: int8
+  compressed_kv_dtype: bfloat16
+  index_head_dim: 64
+  candidate_chunk_size: 64
+  retrieval_chunk_size: 512
+  block_size: 512
+candidate_index: proxy_winner
+sequence_length: 2048
+gradient_checkpointing: true
+global_ablation_tokens: 10000000
+candidate_tokens: 2500000
+training_tokens: 2400000
+validation_tokens: 100000
+max_budget_usd: 10.00
+estimated_spot_usd_per_node_hour: 0.423956
+checkpoint_interval_steps: 20
+spot: true
+zone: asia-east1-c
