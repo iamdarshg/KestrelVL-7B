@@ -165,7 +165,7 @@ def compute_losses(
         if teacher_logits is not None and student_logits is not None:
             log_p_s = F.log_softmax(student_logits.detach().float() / t, dim=-1)
             p_t = F.softmax(teacher_logits.detach().float() / t, dim=-1)
-            kl = float(F.kl_div(log_p_s, p_t, reduction="batchmean").item()) * (t ** 2)
+            kl = max(0.0, float(F.kl_div(log_p_s, p_t, reduction="batchmean").item())) * (t ** 2)
             kl_active = True
         else:
             kl, kl_active = 0.0, False
@@ -210,8 +210,8 @@ def measure_recovery(
         diff = (t - s).abs()
         max_abs = float(diff.max().item())
         mean_abs = float(diff.mean().item())
-        kl = float(F.kl_div(F.log_softmax(s, dim=-1), F.softmax(t, dim=-1),
-                            reduction="batchmean").item())
+        kl = max(0.0, float(F.kl_div(F.log_softmax(s, dim=-1), F.softmax(t, dim=-1),
+                            reduction="batchmean").item()))
     return {"max_abs_diff": max_abs, "mean_abs_diff": mean_abs, "kl": kl,
             "within_tol": bool(max_abs <= tol)}
 

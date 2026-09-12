@@ -4,17 +4,32 @@ name: kestrel-qwen35-ced
 
 sources:
   student_id: Qwen/Qwen3.5-2B-Base
-  student_revision: "" # TODO: pin exact commit hash before any run
+  student_revision: b1485b2fa6dfa1287294f269f5fb618e03d52d7c # pinned 2026-09-13, HF metadata
   teacher_id: Qwen/Qwen3.5-9B
-  teacher_revision: "" # TODO: pin exact commit hash before any run
-  # Revisions MUST be pinned (no floating refs) before Batch-2 or any distillation run.
+  teacher_revision: c202236235762e1c871ad0ccb60c8ee5ba337b9a # pinned 2026-09-13, HF metadata
+  # Revisions are pinned (no floating refs). Verified 2026-09-13 via HF Hub (free metadata):
+  # 2B text_config: hidden 2048, 24 layers, 8 Q / 2 KV heads, head_dim 256, vocab 248320,
+  #   max_pos 262144, tie_word_embeddings=true.
+  # 9B text_config: hidden 4096, 32 layers, 16 Q / 4 KV heads, head_dim 256, vocab 248320,
+  #   max_pos 262144, tie_word_embeddings=false.
+  # Special tokens: identical IDs both sides (endoftext=248044, im_start=248045,
+  #   im_end=248046; image=248056, video=248057, vision span 248053-248054).
+  # Divergence is default-eos STRING only: 2B-Base defaults eos to <|endoftext|> (248044),
+  # 9B post-trained defaults eos to <|im_end|> (248046). Policy: generation uses the
+  # DECODER eos (248046); prefill accepts both. check_tokenizer_compatibility passes on IDs.
 
 arch:
   student_hidden: 2048
   student_layers: 24
+  student_q_heads: 8
+  student_kv_heads: 2
   teacher_hidden: 4096
   teacher_layers: 32
+  teacher_q_heads: 16
+  teacher_kv_heads: 4
+  head_dim: 256
   vocab_size: 248320
+  max_position_embeddings: 262144
 
 loss:
   w_ce: 1.0
