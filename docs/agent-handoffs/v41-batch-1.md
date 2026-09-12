@@ -137,3 +137,32 @@ approval for a spot `a2-highgpu-1g` smoke test (load both checkpoints,
 `validate_sources`, zero-gate logit comparison vs standalone 9B decoder,
 record to ledger); on PASS, proceed to #5 (CSA2) against the
 `dense_reference`/`sparse_memory_stub` interfaces.
+
+## 13. Batch 2 CPU addendum (commit `15ef3ae`, no GPU, $0)
+
+- Revisions PINNED (`qwen35_ced.yaml`): 2B `b1485b2f...`, 9B `c2022362...`
+  (HF Hub metadata 2026-09-13). Real `text_config` verified against contract:
+  2048/24L (8Q/2KV, head_dim 256) and 4096/32L (16Q/4KV, head_dim 256),
+  vocab 248320, max_pos 262144 both. Special-token IDs identical both sides
+  (endoftext 248044, im_start 248045, im_end 248046); only the DEFAULT eos
+  string differs (Base→endoftext, post-trained→im_end). Policy: generation
+  uses decoder eos 248046. `CEDSourceConfig.check_tokenizer_compatibility`
+  passes on IDs.
+- #5 DONE (CPU): `src/model/csa2.py` — `CSA2Config` (configurable cadence,
+  default full→reuse→reuse→reindex), `topk_deterministic`,
+  `CSA2Layer` (chunked scoring, reindex pool-bound, reuse zero-scoring),
+  `dense_reference_attention`, `CSA2Stack` (+`all_full_mode`, snapshot/
+  resume). 22 tests. Note: sparse weights are softmax-over-Top-K, so
+  full-vs-dense agreement holds exactly at top_k == S (test-pinned).
+- #6 DONE (CPU): `src/model/sparse_indexer.py` — `IndexerConfig`
+  (pool 2048, top_k 256, chunked, bf16|int8), `HierarchicalIndexer`
+  (`build_coarse_index`/`retrieve`), `dense_reference_topk`,
+  `recall_at_k`, `synthetic_copy_task`/`span_recall`. 15 tests.
+- `ced_distill.py`: KL clamped at 0.0 (was −3e−08 fp noise).
+- Full-chain CPU interop: bridge→indexer (recall_vs_dense 1.0)→CSA2 stack
+  modes [full, reuse, reindex, reuse], scored [32, 0, 16, 0], reuse replays
+  full exactly. Suite: **174 passed** (105 new + 69 existing). Ruff + diff
+  check clean. Ledger appended (`batch2-cpu-csa2-indexer-revpin`, $0).
+- Remaining spine: #7 (mHC upgrade), #8 (optional Engram), #9 training
+  stages, #10 (InternViT + regression gates) — all need the GPU smoke test
+  first. BLOCKED on GCP approval (see §8 rates).
