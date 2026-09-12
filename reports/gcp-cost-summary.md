@@ -1,26 +1,52 @@
-# Batch 1 — GCP cost summary (cost-governance worker)
+# Batch 1+2 — GCP cost summary
 
-Retrieved: 2026-09-12 (UTC). No VM launched. No spend. Billing-confirmed: n/a.
+Retrieved: 2026-09-12/13 (UTC). No VM launched. No spend. Billing-confirmed: n/a.
 
-## Pricing table (US, cheapest region us-central1)
+## Pricing table (us-central1, Linux, full-node USD/hr)
 
-| Config | GPU | On-demand (USD/hr, full node) | Spot | Source |
+| Config | GPU | On-demand | Spot (surveyed) | Source |
 |---|---|---|---|---|
-| `a2-highgpu-1g` | 1x A100 40GB | $3.67 (range $3.67–$4.33 across 10 US regions) | Variable daily; Spot VMs up to 91% off on-demand incl. GPUs (exact rate on Spot VMs pricing page) | [GCP GPU pricing](https://cloud.google.com/compute/gpus-pricing) (A2 taxonomy) + [GCP GPU instances survey, rev. 2026-09-01](https://www.thundercompute.com/blog/google-cloud-gpu-instances) + [A100 pricing, rev. 2026-09-04](https://www.thundercompute.com/blog/nvidia-a100-pricing) |
-| `a2-ultragpu-1g` | 1x A100 80GB | $5.03 (range $5.03–$6.04 across 10 US regions) | Same spot policy as above | Same sources |
+| `a2-highgpu-1g` | 1x A100 40GB | $3.67 | variable daily, ≤ on-demand; ~$1.10 (ThunderCompute) | [GCP GPU pricing](https://cloud.google.com/compute/gpus-pricing) + [survey 2026-09-01](https://www.thundercompute.com/blog/google-cloud-gpu-instances) |
+| `a2-ultragpu-1g` | 1x A100 80GB | $5.03 | same policy | same |
+| **`g2-standard-4` (CHEAPEST adequate)** | **1x L4 24GB** | **$0.7068** | **≤ on-demand by construction; surveyed ~$0.31 (DevZero) / $0.6481 (Holori 2026-09-06)** | [Holori](https://calculator.holori.com/gcp/vm/g2-standard-4) + [DevZero](https://www.devzero.io/instances/gpu/l4) + [usage.ai 2026-09-07](https://www.usage.ai/blogs/gcp/compute-engine/) |
+| `g2-standard-8` (fallback) | 1x L4 24GB | $0.8536 | ~$0.7362 (Holori) | Holori 2026-09-02 |
+| N1 + T4 (REJECTED) | 1x T4 16GB | ~$0.54 total | — | ThunderCompute — rejected: T4 has no BF16, and 16GB is tight even for sequential int8 loads |
 
-Conclusion: cheapest adequate A100 config on GCP US is **`a2-highgpu-1g` (1x A100 40GB) at $3.67/hr on-demand in us-central1** (80GB only if VRAM requires it: `a2-ultragpu-1g` at $5.03/hr). Spot is cheaper but preemptible and rate varies — quote the Spot VMs pricing page at launch time.
+Conclusion (2026-09-13): cheapest GCP option that can run the BF16 smoke test is
+**spot `g2-standard-4` (1×L4 24GB, 4 vCPU, 16GB RAM) in us-central1-a** —
+~5× cheaper than the cheapest A100. Fit: sequential load (2B ≈4GB validate→unload,
+then 9B ≈18GB bf16 + short-prompt activations < 24GB); 100GB boot PD for weight
+staging via the repo's streaming shard reader. `g2-standard-8` is the named
+fallback only if 16GB host RAM OOMs (requires a fresh approval). Quota verified
+2026-09-13: `PREEMPTIBLE_NVIDIA_L4_GPUS` 1.0/0.0 + `NVIDIA_L4_GPUS` 1.0/0.0 in
+us-central1, project `project-ba289c9c-3c25-4e15-9dc`. G2 available in
+us-central1-a per [GPU locations](https://docs.cloud.google.com/compute/docs/regions-zones/gpu-regions-zones).
 
-## Batch-1 spend
+## Smoke-test cost estimate (proposed, NOT launched)
 
-- Estimated: **$0.00**. No VM launched by this worker; no paid runs authorized.
-- Billing-confirmed: **n/a** (quote-only; pricing assumptions are not an invoice).
-- `gcloud compute instances list` (2026-09-12): one instance, `kestrel-checkpoint-transfer` (e2-micro, us-central1-a), status **TERMINATED** — zero running compute. (Terminated VM's residual persistent disk, if any, is a console-billing check, not a Batch-1 charge.)
+Plan: download pinned revs (~22GB ingress free, ~10–20 min) → checksums →
+sequential load → `validate_sources` → short-prompt forward + zero-gate logit
+compare vs standalone 9B → delete VM. Realistic 30–45 min; hard cap 1h.
 
-## Project totals
+| Component | Math | USD |
+|---|---|---|
+| VM (spot g2-standard-4, conservative ceiling = on-demand) | $0.7068 × 1h | $0.71 |
+| 100GB balanced PD | $0.04/GB-mo ÷ 730 × 1h | $0.006 |
+| Egress | none (results via serial log) | $0.00 |
+| Uncertainty (repo `conservative_cost`, 15%) | ×1.15 | — |
+| **Projected MAX** | | **$0.82** |
+| **Expected TRUE cost** (spot ~$0.31–0.65/h × ~0.5–0.75h) | | **~$0.16–0.49** |
 
-- Batch 1 total: $0.00 estimated / billing-confirmed n/a.
-- Ledger: `reports/gcp-cost-ledger.jsonl` (append-only; this batch added the `batch1-pricing-survey` entry).
+$0.10 gate: cannot be met honestly — even spot L4 needs ≥30 min max for a 22GB
+download + two model loads. Hence approval is required. True billed cost will be
+reconciled into `gcp-cost-ledger.jsonl` (and issues #3/#9) after the run, labeled
+`billing-confirmed` only if the Billing API is reachable, else `estimated`.
+
+## Spend to date
+
+- Estimated: **$0.00** (batches 1+2; no VM launched; pricing surveys only).
+- Billing-confirmed: **n/a**.
+- Ledger: `reports/gcp-cost-ledger.jsonl` (append-only: `batch1-pricing-survey`, `batch2-cpu-csa2-indexer-revpin`, `l4-pricing-and-quota-survey`).
 
 ## Policy reminder
 
