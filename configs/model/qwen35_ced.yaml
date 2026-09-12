@@ -1,0 +1,39 @@
+# CED mechanistic-distillation config (Batch 1: instrumentation only, NO training runs).
+# Mirrors src/training/ced_distill.py::DistillLossConfig / FreezePolicy / BudgetTracker.
+name: kestrel-qwen35-ced
+
+sources:
+  student_id: Qwen/Qwen3.5-2B-Base
+  student_revision: "" # TODO: pin exact commit hash before any run
+  teacher_id: Qwen/Qwen3.5-9B
+  teacher_revision: "" # TODO: pin exact commit hash before any run
+  # Revisions MUST be pinned (no floating refs) before Batch-2 or any distillation run.
+
+arch:
+  student_hidden: 2048
+  student_layers: 24
+  teacher_hidden: 4096
+  teacher_layers: 32
+  vocab_size: 248320
+
+loss:
+  w_ce: 1.0
+  w_kl: 1.0
+  w_hidden: 0.5
+  w_attn: 0.5
+  w_kv: 0.25
+  w_index: 0.25
+  temperature: 1.0
+  # Hidden/attention matching subset only -- never full retention by default.
+  selected_layers: [4, 8, 12, 16, 20]
+
+freeze_stages:
+  - bridge_only
+  - bridge_global_kv
+  - lora_recovery
+  - selective_unfreeze
+
+compute_budget:
+  max_gpu_hours: 50
+  gpu_class: a100_80gb
+  hard_stop: true
