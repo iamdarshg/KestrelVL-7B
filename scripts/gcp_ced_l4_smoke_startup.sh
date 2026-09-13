@@ -29,7 +29,7 @@ $PY --version
 $PY -c "import torch; print('torch', torch.__version__, 'cuda=', torch.cuda.is_available())"
 
 echo "--- pip upgrades ---"
-$PY -m pip install -q -U transformers hf_transfer safetensors huggingface_hub 2>&1 | tail -2
+$PY -m pip install -q -U transformers hf_transfer safetensors huggingface_hub accelerate 2>&1 | tail -2
 $PY -c "import transformers; print('transformers', transformers.__version__)"
 
 cat > /tmp/ced_l4_smoke.py <<PYEOF
