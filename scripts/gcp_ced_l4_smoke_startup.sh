@@ -31,6 +31,8 @@ $PY -c "import torch; print('torch', torch.__version__, 'cuda=', torch.cuda.is_a
 echo "--- pip (NO -U: never touch the image torch stack) ---"
 $PY -m pip install -q transformers hf_transfer safetensors huggingface_hub accelerate 2>&1 | tail -2
 $PY -c "import transformers; print('transformers', transformers.__version__)"
+echo "--- remove broken torchaudio (image ships torch 2.9.1 + torchaudio 2.11 ABI mismatch; text-only smoke does not need it) ---"
+$PY -m pip uninstall -y torchaudio 2>&1 | tail -1 || true
 echo "--- preflight: torch stack must import cleanly before any download ---"
 $PY -c "import torch, transformers, accelerate; assert torch.cuda.is_available(); print('preflight OK', torch.__version__)" || { echo "FATAL: preflight failed"; exit 11; }
 

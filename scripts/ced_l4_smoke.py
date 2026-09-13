@@ -134,5 +134,9 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:  # fail loudly but leave evidence
+        import traceback
+
+        tb = traceback.format_exc(limit=15)
+        print("SMOKE_TRACEBACK=" + tb[-3000:])
         print("SMOKE_RESULT_JSON=" + json.dumps({"status": "FAIL", "error": str(exc)[:500]}))
         sys.exit(1)
