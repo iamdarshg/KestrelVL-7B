@@ -3,8 +3,7 @@
 ## 1. Commit range
 
 Starting SHA: `3fb7cee` (L4 real-checkpoint smoke PASS, #3 unblocked).
-Ending SHA: this batch's commit (see §2). One ledger repair included
-(first ledger line held two concatenated JSON objects; split, no data changed).
+Code commit SHA: `7e15c84` (this batch's work; this handoff rides in it).
 
 ## 2. Commits created this batch
 
