@@ -28,9 +28,11 @@ echo "using interpreter: $PY"
 $PY --version
 $PY -c "import torch; print('torch', torch.__version__, 'cuda=', torch.cuda.is_available())"
 
-echo "--- pip upgrades ---"
-$PY -m pip install -q -U transformers hf_transfer safetensors huggingface_hub accelerate 2>&1 | tail -2
+echo "--- pip (NO -U: never touch the image torch stack) ---"
+$PY -m pip install -q transformers hf_transfer safetensors huggingface_hub accelerate 2>&1 | tail -2
 $PY -c "import transformers; print('transformers', transformers.__version__)"
+echo "--- preflight: torch stack must import cleanly before any download ---"
+$PY -c "import torch, transformers, accelerate; assert torch.cuda.is_available(); print('preflight OK', torch.__version__)" || { echo "FATAL: preflight failed"; exit 11; }
 
 cat > /tmp/ced_l4_smoke.py <<PYEOF
 PLACEHOLDER
