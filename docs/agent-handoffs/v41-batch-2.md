@@ -3,7 +3,8 @@
 ## 1. Commit range
 
 Starting SHA: `3fb7cee` (L4 real-checkpoint smoke PASS, #3 unblocked).
-Code commit SHA: `7e15c84` (this batch's work; this handoff rides in it).
+Code commit SHA: `7e15c84` (all Batch-2 code, tests, ledger repair/entry,
+and this handoff; a trivial SHA-stamp fixup follows it in the log).
 
 ## 2. Commits created this batch
 
