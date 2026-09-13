@@ -11,8 +11,9 @@ import torch
 from model.ced_config import (
     CEDSourceConfig,
     DECODER_HIDDEN_SIZE,
+    EMBEDDING_VOCAB_SIZE,
     ENCODER_HIDDEN_SIZE,
-    SHARED_VOCAB_SIZE,
+    TOKENIZER_VOCAB_SIZE,
     ZERO_GATE_LOGIT_TOL,
     assert_no_hidden_size_splice,
 )
@@ -48,8 +49,8 @@ def test_tokenizer_compat_matching_passes():
         expected_special_token_ids={"bos": 1, "eos": 2},
     )
     cfg.check_tokenizer_compatibility(
-        SHARED_VOCAB_SIZE,
-        SHARED_VOCAB_SIZE,
+        TOKENIZER_VOCAB_SIZE,
+        TOKENIZER_VOCAB_SIZE,
         {"bos": 1, "eos": 2},
         {"bos": 1, "eos": 2},
     )
@@ -58,17 +59,27 @@ def test_tokenizer_compat_matching_passes():
 def test_tokenizer_compat_divergent_vocab_raises():
     cfg = CEDSourceConfig()
     with pytest.raises(ValueError):
-        cfg.check_tokenizer_compatibility(SHARED_VOCAB_SIZE, SHARED_VOCAB_SIZE - 1)
+        cfg.check_tokenizer_compatibility(TOKENIZER_VOCAB_SIZE, TOKENIZER_VOCAB_SIZE - 1)
     with pytest.raises(ValueError):
-        cfg.check_tokenizer_compatibility(SHARED_VOCAB_SIZE - 1, SHARED_VOCAB_SIZE)
+        cfg.check_tokenizer_compatibility(TOKENIZER_VOCAB_SIZE - 1, TOKENIZER_VOCAB_SIZE)
 
 
 def test_tokenizer_compat_divergent_special_ids_raise():
     cfg = CEDSourceConfig(expected_special_token_ids={"bos": 1})
     with pytest.raises(ValueError):
         cfg.check_tokenizer_compatibility(
-            SHARED_VOCAB_SIZE, SHARED_VOCAB_SIZE, {"bos": 1}, {"bos": 99}
+            TOKENIZER_VOCAB_SIZE, TOKENIZER_VOCAB_SIZE, {"bos": 1}, {"bos": 99}
         )
+
+
+def test_tokenizer_vocab_differs_from_embedding_vocab_by_design():
+    # L4 smoke 2026-09-13: len(tokenizer) == 248077 both sides, while the
+    # padded LM-head has 248320 rows. The compat check must use the former.
+    assert TOKENIZER_VOCAB_SIZE == 248077
+    assert EMBEDDING_VOCAB_SIZE == 248320
+    cfg = CEDSourceConfig()
+    with pytest.raises(ValueError, match="contract 248077"):
+        cfg.check_tokenizer_compatibility(EMBEDDING_VOCAB_SIZE, TOKENIZER_VOCAB_SIZE)
 
 
 # --- hidden width contract --------------------------------------------------

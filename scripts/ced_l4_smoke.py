@@ -22,8 +22,9 @@ DECODER_ID = "Qwen/Qwen3.5-9B"
 DECODER_REV = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 
 EXPECTED = {
-    "encoder": {"hidden": 2048, "layers": 24, "vocab": 248320},
-    "decoder": {"hidden": 4096, "layers": 32, "vocab": 248320},
+    # TOKENIZER_VOCAB (len(tokenizer)) != EMBEDDING_VOCAB (padded LM-head rows).
+    "encoder": {"hidden": 2048, "layers": 24, "tok_vocab": 248077, "emb_vocab": 248320},
+    "decoder": {"hidden": 4096, "layers": 32, "tok_vocab": 248077, "emb_vocab": 248320},
 }
 SPECIAL_IDS = {"endoftext": 248044, "im_start": 248045, "im_end": 248046}
 PROMPT = "The capital of France is"
@@ -35,11 +36,16 @@ def _sha_sample(tensor, n: int = 1 << 20) -> str:
     return hashlib.sha256(flat.numpy().tobytes()).hexdigest()[:16]
 
 
-def check_tokenizer(tok, side: str) -> dict:
+def check_tokenizer(tok, side: str, exp_tok_vocab: int) -> dict:
     vocab = len(tok)
-    if vocab != 248320:
-        raise ValueError(f"{side}: vocab {vocab} != 248320")
+    if vocab != exp_tok_vocab:
+        raise ValueError(f"{side}: tokenizer vocab {vocab} != {exp_tok_vocab}")
     dec = tok.added_tokens_decoder
+    for name, tid in SPECIAL_IDS.items():
+        entry = dec.get(tid)
+        content = entry.content if hasattr(entry, "content") else entry
+        if content is None or name not in str(content):
+            raise ValueError(f"{side}: special id {tid} is not {name!r} (got {content!r})")
     found = {tok.convert_ids_to_tokens(i) for i in SPECIAL_IDS.values()}
     return {"vocab_size": vocab, "special_ids_ok": True, "special_tokens": sorted(found)}
 
@@ -51,7 +57,7 @@ def smoke_model(model_id: str, rev: str, kind: str, do_generate: bool) -> dict:
     t0 = time.time()
     exp = EXPECTED[kind]
     tok = AutoTokenizer.from_pretrained(model_id, revision=rev, trust_remote_code=False)
-    out: dict = {"tokenizer": check_tokenizer(tok, kind)}
+    out: dict = {"tokenizer": check_tokenizer(tok, kind, exp["tok_vocab"])}
     model = AutoModelForCausalLM.from_pretrained(
         model_id, revision=rev, dtype=torch.bfloat16,
         device_map="cuda:0", trust_remote_code=False,
@@ -60,9 +66,13 @@ def smoke_model(model_id: str, rev: str, kind: str, do_generate: bool) -> dict:
     text_cfg = getattr(cfg, "text_config", cfg) or cfg
     hidden = int(getattr(text_cfg, "hidden_size"))
     layers = int(getattr(text_cfg, "num_hidden_layers"))
+    emb_vocab = int(getattr(text_cfg, "vocab_size"))
     if hidden != exp["hidden"] or layers != exp["layers"]:
         raise ValueError(f"{kind}: arch {hidden}/{layers} != {exp}")
-    total, trainable = sum(p.numel() for p in model.parameters()), 0
+    if emb_vocab != exp["emb_vocab"]:
+        raise ValueError(f"{kind}: embedding vocab {emb_vocab} != {exp['emb_vocab']}")
+    out["emb_vocab"] = emb_vocab
+    total = sum(p.numel() for p in model.parameters())
     out.update({"hidden": hidden, "layers": layers, "params": total,
                 "load_s": round(time.time() - t0, 1)})
     ids = tok(PROMPT, return_tensors="pt").input_ids.cuda()

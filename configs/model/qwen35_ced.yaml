@@ -28,7 +28,8 @@ arch:
   teacher_q_heads: 16
   teacher_kv_heads: 4
   head_dim: 256
-  vocab_size: 248320
+  vocab_size: 248320 # padded embedding rows (text_config). Tokenizer length is
+  tokenizer_vocab_size: 248077 # len(tokenizer), identical both sides (L4 smoke 2026-09-13)
   max_position_embeddings: 262144
 
 loss:

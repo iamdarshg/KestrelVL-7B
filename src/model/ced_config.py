@@ -18,7 +18,13 @@ ENCODER_HIDDEN_SIZE = 2048
 ENCODER_LAYERS = 24
 DECODER_HIDDEN_SIZE = 4096
 DECODER_LAYERS = 32
-SHARED_VOCAB_SIZE = 248320
+# Two distinct vocab numbers (L4 smoke 2026-09-13 proved the distinction):
+# - TOKENIZER_VOCAB_SIZE: len(tokenizer), identical both sides (verified
+#   added-vocab diff is empty);
+# - EMBEDDING_VOCAB_SIZE: padded text_config vocab_size / LM-head rows.
+SHARED_VOCAB_SIZE = 248320  # embedding rows (kept as the arch-level name)
+TOKENIZER_VOCAB_SIZE = 248077
+EMBEDDING_VOCAB_SIZE = 248320
 
 # Numerical tolerance for zero-gate decoder recovery checks (logit space).
 ZERO_GATE_LOGIT_TOL = 1e-5
@@ -41,6 +47,7 @@ class CEDSourceConfig:
     decoder_hidden_size: int = DECODER_HIDDEN_SIZE
     decoder_layers: int = DECODER_LAYERS
     vocab_size: int = SHARED_VOCAB_SIZE
+    tokenizer_vocab_size: int = TOKENIZER_VOCAB_SIZE
     expected_special_token_ids: dict[str, int] = field(default_factory=dict)
 
     def validate_architecture(self) -> None:
@@ -85,14 +92,23 @@ class CEDSourceConfig:
         encoder_special_ids: dict[str, int] | None = None,
         decoder_special_ids: dict[str, int] | None = None,
     ) -> None:
-        """Fail loudly on any tokenizer/special-token divergence."""
-        if encoder_vocab_size != self.vocab_size:
+        """Fail loudly on any tokenizer/special-token divergence.
+
+        Tokenizer lengths are checked against ``tokenizer_vocab_size``
+        (248077), NOT the padded embedding size — the L4 smoke test proved
+        these differ. Use ``validate_architecture`` for embedding rows.
+        """
+        if self.tokenizer_vocab_size != TOKENIZER_VOCAB_SIZE:
             raise ValueError(
-                f"encoder vocab {encoder_vocab_size} != contract {self.vocab_size}"
+                f"contract tokenizer vocab {self.tokenizer_vocab_size} != {TOKENIZER_VOCAB_SIZE}"
             )
-        if decoder_vocab_size != self.vocab_size:
+        if encoder_vocab_size != self.tokenizer_vocab_size:
             raise ValueError(
-                f"decoder vocab {decoder_vocab_size} != contract {self.vocab_size}"
+                f"encoder vocab {encoder_vocab_size} != contract {self.tokenizer_vocab_size}"
+            )
+        if decoder_vocab_size != self.tokenizer_vocab_size:
+            raise ValueError(
+                f"decoder vocab {decoder_vocab_size} != contract {self.tokenizer_vocab_size}"
             )
         if encoder_vocab_size != decoder_vocab_size:
             raise ValueError("encoder/decoder vocab sizes diverge")
