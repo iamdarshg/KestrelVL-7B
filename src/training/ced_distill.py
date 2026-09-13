@@ -31,6 +31,9 @@ __all__ = [
     "FreezePolicy",
     "BudgetTracker",
     "write_evidence_report",
+    "STAGE_ORDER_5",
+    "STAGE_POLICIES_5",
+    "TrainingRunState",
 ]
 
 _DEFAULT_SELECTED_LAYERS = (4, 8, 12, 16, 20)
@@ -396,3 +399,244 @@ def _optional_ced_imports() -> dict[str, Any]:
         except Exception:
             loaded[dotted] = None
     return loaded
+
+
+# --- Batch-2: five-stage schedule + resume-safe run accounting (issue #9) ---
+
+#: Ordered five-stage distillation schedule for the final training batch.
+#: Never defaults to full-model unfreeze: stage 5 is a narrow selective
+#: inherited full-rank unfreeze that requires explicit opt-in.
+STAGE_ORDER_5: tuple[str, ...] = ("stage_1", "stage_2", "stage_3", "stage_4", "stage_5")
+
+#: Per-stage trainability policy. Key semantics:
+#: ``encoder_frozen``/``decoder_frozen`` — backbone freeze flags;
+#: ``bridge_trainable`` — encoder bridge adapter + ``output_gate``;
+#: ``memory_gates_trainable`` — decoder-side external-memory gates
+#: (``ExternalMemoryHook.gate``); ``global_kv_trainable`` — shared global K/V;
+#: ``indexer_trainable`` — coarse/fine indexer projections + temperature;
+#: ``lora`` — LoRA/adapters on the decoder; ``upper_encoder_layers_unfrozen``
+#: — count of top encoder layers unfrozen (0 = none);
+#: ``selective_fullrank`` — narrow selective inherited full-rank unfreeze
+#: (stage 5 only, explicit opt-in required, never full-model).
+STAGE_POLICIES_5: dict[str, dict[str, Any]] = {
+    "stage_1": {
+        "encoder_frozen": True, "decoder_frozen": True,
+        "bridge_trainable": True, "memory_gates_trainable": True,
+        "global_kv_trainable": False, "indexer_trainable": False,
+        "lora": False, "upper_encoder_layers_unfrozen": 0,
+        "selective_fullrank": False,
+    },
+    "stage_2": {
+        "encoder_frozen": True, "decoder_frozen": True,
+        "bridge_trainable": True, "memory_gates_trainable": True,
+        "global_kv_trainable": True, "indexer_trainable": True,
+        "lora": False, "upper_encoder_layers_unfrozen": 0,
+        "selective_fullrank": False,
+    },
+    "stage_3": {
+        "encoder_frozen": True, "decoder_frozen": True,
+        "bridge_trainable": True, "memory_gates_trainable": True,
+        "global_kv_trainable": True, "indexer_trainable": True,
+        "lora": True, "upper_encoder_layers_unfrozen": 0,
+        "selective_fullrank": False,
+    },
+    "stage_4": {
+        "encoder_frozen": False, "decoder_frozen": True,
+        "bridge_trainable": True, "memory_gates_trainable": True,
+        "global_kv_trainable": True, "indexer_trainable": True,
+        "lora": True, "upper_encoder_layers_unfrozen": 2,
+        "selective_fullrank": False,
+    },
+    "stage_5": {
+        "encoder_frozen": False, "decoder_frozen": False,
+        "bridge_trainable": True, "memory_gates_trainable": True,
+        "global_kv_trainable": True, "indexer_trainable": True,
+        "lora": True, "upper_encoder_layers_unfrozen": 2,
+        "selective_fullrank": True,
+    },
+}
+
+_STAGE_5_REQUIRED_KEYS = frozenset(STAGE_POLICIES_5["stage_1"].keys())
+
+
+def _validate_stage_5_policy(stage: str, policy: dict[str, Any]) -> None:
+    missing = _STAGE_5_REQUIRED_KEYS - set(policy.keys())
+    if missing:
+        raise ValueError(f"stage {stage!r} policy missing keys: {sorted(missing)}")
+    n_upper = policy["upper_encoder_layers_unfrozen"]
+    if isinstance(n_upper, bool) or not isinstance(n_upper, int) or n_upper < 0:
+        raise ValueError("upper_encoder_layers_unfrozen must be an int >= 0")
+
+
+for _stage_name, _policy in STAGE_POLICIES_5.items():
+    _validate_stage_5_policy(_stage_name, _policy)
+
+
+def trainable_groups_5(policy: Mapping[str, Any]) -> list[str]:
+    """Sorted names of trainable parameter groups for a stage-5-style policy."""
+    groups = []
+    if policy.get("bridge_trainable"):
+        groups.append("bridge")
+    if policy.get("memory_gates_trainable"):
+        groups.append("memory_gates")
+    if policy.get("global_kv_trainable"):
+        groups.append("global_kv")
+    if policy.get("indexer_trainable"):
+        groups.append("indexer")
+    if policy.get("lora"):
+        groups.append("lora")
+    if int(policy.get("upper_encoder_layers_unfrozen", 0)) > 0:
+        groups.append("upper_encoder")
+    if policy.get("selective_fullrank"):
+        groups.append("selective_fullrank")
+    return sorted(groups)
+
+
+# Attach the 5-stage API to FreezePolicy without changing existing stages.
+FreezePolicy.STAGES_5 = STAGE_ORDER_5  # type: ignore[attr-defined]
+
+
+@staticmethod  # type: ignore[misc]
+def _stage_policy_5(stage: str) -> dict[str, Any]:
+    """Return the stage-1..5 trainability policy for ``stage`` (copy)."""
+    if stage not in STAGE_POLICIES_5:
+        raise ValueError(f"unknown training stage {stage!r}; expected one of "
+                         f"{list(STAGE_ORDER_5)}")
+    return dict(STAGE_POLICIES_5[stage])
+
+
+FreezePolicy.stage_policy_5 = _stage_policy_5  # type: ignore[attr-defined]
+
+
+@dataclass
+class TrainingRunState:
+    """Resume-safe accounting for one budgeted distillation run (issue #9).
+
+    Accumulates tokens, wall time, GPU seconds and the cumulative GCP cost
+    estimate alongside the current stage, checkpoint pointer, CPU RNG state
+    and data cursor. JSON-serialisable via :meth:`to_dict`; use
+    :meth:`save`/:meth:`load` for crash-safe resume.
+    """
+
+    stage: str = "stage_1"
+    tokens: int = 0
+    wall_seconds: float = 0.0
+    gpu_seconds: float = 0.0
+    gcp_cost_usd_est: float = 0.0
+    checkpoint: str | None = None
+    rng_state: list[int] | None = None
+    data_cursor: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.stage not in STAGE_ORDER_5:
+            raise ValueError(f"unknown training stage {self.stage!r}")
+        for name in ("tokens",):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be an int >= 0")
+        for name in ("wall_seconds", "gpu_seconds", "gcp_cost_usd_est"):
+            if float(getattr(self, name)) < 0:
+                raise ValueError(f"{name} must be >= 0")
+        self.tokens = int(self.tokens)
+        self.wall_seconds = float(self.wall_seconds)
+        self.gpu_seconds = float(self.gpu_seconds)
+        self.gcp_cost_usd_est = float(self.gcp_cost_usd_est)
+        self.data_cursor = dict(self.data_cursor)
+
+    @property
+    def gpu_hours(self) -> float:
+        return self.gpu_seconds / 3600.0
+
+    def record(
+        self,
+        tokens: int = 0,
+        wall_seconds: float = 0.0,
+        gpu_seconds: float = 0.0,
+        gcp_cost_usd: float = 0.0,
+    ) -> "TrainingRunState":
+        """Accumulate one accounting step; all deltas must be non-negative."""
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise ValueError("tokens delta must be an int >= 0")
+        for name, value in (("wall_seconds", wall_seconds), ("gpu_seconds", gpu_seconds),
+                            ("gcp_cost_usd", gcp_cost_usd)):
+            if float(value) < 0:
+                raise ValueError(f"{name} delta must be >= 0")
+        self.tokens += int(tokens)
+        self.wall_seconds += float(wall_seconds)
+        self.gpu_seconds += float(gpu_seconds)
+        self.gcp_cost_usd_est += float(gcp_cost_usd)
+        return self
+
+    def advance_stage(self, next_stage: str) -> "TrainingRunState":
+        """Move forward one stage (strictly forward-only, no skipping back)."""
+        if next_stage not in STAGE_ORDER_5:
+            raise ValueError(f"unknown training stage {next_stage!r}")
+        if STAGE_ORDER_5.index(next_stage) <= STAGE_ORDER_5.index(self.stage):
+            raise ValueError(f"cannot move from {self.stage!r} to {next_stage!r}: "
+                             "stages advance strictly forward")
+        self.stage = next_stage
+        return self
+
+    def set_checkpoint(self, path: str | Path) -> "TrainingRunState":
+        self.checkpoint = str(path)
+        return self
+
+    def set_data_cursor(self, cursor: Mapping[str, Any]) -> "TrainingRunState":
+        self.data_cursor = dict(cursor)
+        return self
+
+    def capture_rng(self) -> "TrainingRunState":
+        """Snapshot the CPU RNG state for deterministic resume."""
+        self.rng_state = torch.get_rng_state().to(torch.int64).tolist()
+        return self
+
+    def restore_rng(self) -> "TrainingRunState":
+        """Restore a previously captured CPU RNG state."""
+        if not self.rng_state:
+            raise ValueError("no captured rng_state to restore")
+        self._apply_rng_state(self.rng_state)
+        return self
+
+    @staticmethod
+    def _apply_rng_state(state: list[int]) -> None:
+        torch.set_rng_state(torch.tensor(state, dtype=torch.uint8))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage, "tokens": self.tokens,
+            "wall_seconds": self.wall_seconds, "gpu_seconds": self.gpu_seconds,
+            "gpu_hours": self.gpu_hours, "gcp_cost_usd_est": self.gcp_cost_usd_est,
+            "checkpoint": self.checkpoint, "rng_state": self.rng_state,
+            "data_cursor": dict(self.data_cursor),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TrainingRunState":
+        state = cls(
+            stage=str(payload.get("stage", "stage_1")),
+            tokens=int(payload.get("tokens", 0)),
+            wall_seconds=float(payload.get("wall_seconds", 0.0)),
+            gpu_seconds=float(payload.get("gpu_seconds", 0.0)),
+            gcp_cost_usd_est=float(payload.get("gcp_cost_usd_est", 0.0)),
+            checkpoint=payload.get("checkpoint"),
+            rng_state=list(payload["rng_state"]) if payload.get("rng_state") else None,
+            data_cursor=dict(payload.get("data_cursor", {})),
+        )
+        return state
+
+    def save(self, path: str | Path) -> Path:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n",
+                       encoding="utf-8")
+        return out
+
+    @classmethod
+    def load(cls, path: str | Path) -> "TrainingRunState":
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    def summary(self) -> dict[str, Any]:
+        payload = self.to_dict()
+        payload["trainable_groups"] = trainable_groups_5(
+            STAGE_POLICIES_5[self.stage])
+        return payload

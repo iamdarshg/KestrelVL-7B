@@ -23,6 +23,7 @@ from torch.utils.checkpoint import checkpoint
 
 from .attention.cache import KestrelCache
 from .attention.mhc import ManifoldHyperConnection
+from .attention.mhc_singlepass import SinglePassMHC
 from .attention.module import V4FlashAttention
 from .configuration import KestrelConfig
 from .multimodal_model import KestrelOutput
@@ -217,6 +218,12 @@ class RealDecoderLayer(nn.Module):
         super().__init__()
         self.input_norm = input_norm
         self.attention = attention
+        self.mhc_backend = str(getattr(config, "mhc_backend", "residual"))
+        if self.mhc_backend not in ("residual", "single_pass"):
+            raise ValueError(
+                f"unknown mhc_backend {self.mhc_backend!r}; expected "
+                "('residual', 'single_pass')"
+            )
         self.attn_mhc = ManifoldHyperConnection(
             config.mhc_streams, config.mhc_sinkhorn_iters, config.mhc_enabled
         ).to(device=next(attention.parameters()).device, dtype=next(attention.parameters()).dtype)
@@ -225,8 +232,24 @@ class RealDecoderLayer(nn.Module):
         self.mlp_mhc = ManifoldHyperConnection(
             config.mhc_streams, config.mhc_sinkhorn_iters, config.mhc_enabled
         ).to(device=next(attention.parameters()).device, dtype=next(attention.parameters()).dtype)
+        # Issue #7 opt-in fused backend: same parameter count as the pair,
+        # initialised from the pair for exact A/B agreement. Never default.
+        self.mhc_fused: SinglePassMHC | None = None
+        if self.mhc_backend == "single_pass":
+            self.mhc_fused = SinglePassMHC.from_sequential(self.attn_mhc, self.mlp_mhc)
         self.debug_finite = False
         self.debug_layer_index = -1
+
+    def promote_to_single_pass(self) -> SinglePassMHC:
+        """Evidence-gated opt-in: build the fused backend from the live pair.
+
+        Copies current logits/scales (not just init) so agreement holds after
+        training. Returns the fused module. Does NOT change the forward path;
+        set ``self.mhc_backend = "single_pass"`` explicitly to route there.
+        """
+        fused = SinglePassMHC.from_sequential(self.attn_mhc, self.mlp_mhc)
+        self.mhc_fused = fused
+        return fused
 
     def forward(
         self, x: torch.Tensor, position_ids: torch.Tensor, cache: KestrelCache | None
@@ -265,7 +288,13 @@ class RealDecoderLayer(nn.Module):
             )
         if self.debug_finite and not torch.isfinite(update).all():
             raise FloatingPointError("non-finite MLP output")
-        x = self.mlp_mhc(x, update)
+        if self.mhc_backend == "single_pass" and self.mhc_fused is not None:
+            # Issue #7 fused path: x1 (above) is still the MLP input; the two
+            # mixing applications collapse into one fused coefficient pass
+            # over (base, attn, update) with no second stream materialisation.
+            x = self.mhc_fused(base, attn, update)
+        else:
+            x = self.mlp_mhc(x, update)
         if self.debug_finite and not torch.isfinite(x).all():
             raise FloatingPointError("non-finite MLP mHC output")
         return x, branch
@@ -523,9 +552,17 @@ class RealNemotronKestrelForCausalLM(nn.Module):
         return_dict: bool = True,
         output_hidden_states: bool = False,
         logits_to_keep: int | None = None,
+        output_recovery_states: bool = False,
+        recovery_hidden_layers: tuple[int, ...] | None = None,
     ) -> KestrelOutput | tuple[torch.Tensor, torch.Tensor | None]:
         del attention_mask
         x = self.embed_tokens(input_ids)
+        requested_recovery_layers = tuple(
+            dict.fromkeys(recovery_hidden_layers or (0, -1))
+        )
+        recovery_states: dict[int, torch.Tensor] = {}
+        if output_recovery_states and 0 in requested_recovery_layers:
+            recovery_states[0] = x
         visual_prefix = 0
         if pixel_values is not None:
             if past_key_values is not None:
@@ -571,8 +608,22 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                 x, branch = layer(x, position_ids, past_key_values)
             if self.debug_finite and not torch.isfinite(x).all():
                 raise FloatingPointError(f"non-finite decoder output at layer {layer_index}")
+            recovery_layer = layer_index + 1
+            if output_recovery_states and recovery_layer in requested_recovery_layers:
+                recovery_states[recovery_layer] = x
         hidden_states = self.norm(x)
-        if output_hidden_states:
+        if output_recovery_states:
+            if -1 in requested_recovery_layers:
+                recovery_states[-1] = hidden_states
+            unavailable = [
+                layer for layer in requested_recovery_layers if layer not in recovery_states
+            ]
+            if unavailable:
+                raise ValueError(
+                    "requested recovery hidden-state layers are unavailable: "
+                    f"{unavailable}"
+                )
+        if output_hidden_states and not output_recovery_states:
             empty_logits = hidden_states.new_empty(*hidden_states.shape[:-1], 0)
             return KestrelOutput(
                 logits=empty_logits,
@@ -602,8 +653,43 @@ class RealNemotronKestrelForCausalLM(nn.Module):
                 labels[:, 1:].to(logits.device).reshape(-1),
                 ignore_index=-100,
             )
-        output = KestrelOutput(logits=logits, loss=loss, past_key_values=past_key_values)
+        output = KestrelOutput(
+            logits=logits,
+            loss=loss,
+            past_key_values=past_key_values,
+            hidden_states=(
+                tuple(recovery_states[layer] for layer in requested_recovery_layers)
+                if output_recovery_states
+                else None
+            ),
+            hidden_state_map=recovery_states if output_recovery_states else None,
+        )
         return output if return_dict else (logits, loss)
+
+    @torch.no_grad()
+    def forward_recovery(
+        self,
+        input_ids: torch.Tensor,
+        selected_layers: tuple[int, ...] = (0, -1),
+        **kwargs: Any,
+    ) -> KestrelOutput:
+        """Return full logits plus only the hidden states used for recovery.
+
+        The normal ``output_hidden_states=True`` path intentionally returns a
+        tensor for low-memory sampled training.  Recovery needs both logits
+        and teacher-comparable states, so it is an explicit opt-in path that
+        does not change throughput or training callers.
+        """
+        output = self.forward(
+            input_ids,
+            output_hidden_states=True,
+            output_recovery_states=True,
+            recovery_hidden_layers=selected_layers,
+            **kwargs,
+        )
+        if not isinstance(output, KestrelOutput):
+            raise RuntimeError("recovery forward unexpectedly returned a tuple")
+        return output
 
     def parameter_count(self, trainable_only: bool = False) -> int:
         return sum(

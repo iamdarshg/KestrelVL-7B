@@ -42,6 +42,9 @@ class KestrelConfig:
     mhc_enabled: bool = True
     mhc_streams: int = 2
     mhc_sinkhorn_iters: int = 6
+    # Issue #7: mHC backend selector. "residual" is the existing sequential
+    # pair and the ONLY default; "single_pass" is opt-in and evidence-gated.
+    mhc_backend: str = "residual"
     attention_output_scale_init: float = 0.01
     dropout: float = 0.0
     rms_norm_eps: float = 1e-6
@@ -68,6 +71,10 @@ class KestrelConfig:
             raise ValueError("attention dimensions must be positive")
         if self.mhc_streams < 1:
             raise ValueError("mhc_streams must be positive")
+        if self.mhc_backend not in ("residual", "single_pass"):
+            raise ValueError(
+                f"mhc_backend must be 'residual' or 'single_pass', got {self.mhc_backend!r}"
+            )
         if self.attention_output_scale_init < 0:
             raise ValueError("attention_output_scale_init must be non-negative")
         if self.index_topk < 1 or self.candidate_chunk_size < 1 or self.retrieval_chunk_size < 1:
