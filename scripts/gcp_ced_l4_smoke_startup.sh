@@ -36,5 +36,11 @@ cat > /tmp/ced_l4_smoke.py <<PYEOF
 PLACEHOLDER
 PYEOF
 echo "--- running smoke ---"
-timeout 3000 $PY /tmp/ced_l4_smoke.py
-echo "smoke exit: $?"
+if timeout 3000 $PY /tmp/ced_l4_smoke.py; then
+  echo "smoke exit: 0 PASS"
+else
+  echo "smoke exit: $? FAIL -- holding VM 10 min for log collection, then shutdown"
+  dmesg 2>/dev/null | tail -20 || true
+  $PY -m pip list 2>/dev/null | grep -i -E "torch|transformers|safetensors|huggingface|numpy" || true
+  sleep 600
+fi
