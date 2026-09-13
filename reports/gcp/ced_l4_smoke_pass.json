@@ -1,0 +1,86 @@
+{
+ "gpu": "NVIDIA L4",
+ "status": "PASS",
+ "steps": {
+  "decoder_9b": {
+   "emb_vocab": 248320,
+   "forward_s": 1.16,
+   "gen_s": 0.81,
+   "generated_ids": [
+    11751,
+    13,
+    198,
+    760,
+    6511,
+    314,
+    9338,
+    369
+   ],
+   "generated_text": " Paris.\nThe capital of France is",
+   "hidden": 4096,
+   "layers": 32,
+   "lm_head_sha": "d5dbc38baed5e6af",
+   "load_s": 639.9,
+   "logit_sample": [
+    7.25,
+    4.5938,
+    2.6094,
+    4.1875,
+    2.8125
+   ],
+   "logits_shape": [
+    1,
+    5,
+    248320
+   ],
+   "params": 8953803264,
+   "peak_vram_gb": 16.76,
+   "tokenizer": {
+    "special_ids_ok": true,
+    "special_tokens": [
+     "<|endoftext|>",
+     "<|im_end|>",
+     "<|im_start|>"
+    ],
+    "vocab_size": 248077
+   },
+   "zero_gate_max_abs_diff": 0.0
+  },
+  "encoder_2b": {
+   "emb_vocab": 248320,
+   "forward_s": 1.12,
+   "gen_s": 0.0,
+   "generated_ids": [],
+   "generated_text": "",
+   "hidden": 2048,
+   "layers": 32,
+   "lm_head_sha": "64ba428bdb8a7cea",
+   "load_s": 49.9,
+   "logit_sample": [
+    9.25,
+    7.3125,
+    4.9062,
+    7.6875,
+    3.6406
+   ],
+   "logits_shape": [
+    1,
+    5,
+    248320
+   ],
+   "params": 1881825088,
+   "peak_vram_gb": 3.54,
+   "tokenizer": {
+    "special_ids_ok": true,
+    "special_tokens": [
+     "<|endoftext|>",
+     "<|im_end|>",
+     "<|im_start|>"
+    ],
+    "vocab_size": 248077
+   },
+   "zero_gate_max_abs_diff": 0.0
+  }
+ },
+ "wall_s": 703.2
+}
