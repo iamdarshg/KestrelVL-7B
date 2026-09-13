@@ -49,6 +49,17 @@ freeze_stages:
   - lora_recovery
   - selective_unfreeze
 
+# Issue #9 five-stage schedule for the final training batch (Batch 3).
+# Mirrors src/training/ced_distill.py::STAGE_POLICIES_5 keys; hour splits are
+# PROVISIONAL (sum must stay <= compute_budget.max_gpu_hours; hard_stop enforced
+# by BudgetTracker). Stage 5 is narrow selective full-rank, opt-in only.
+training_stages:
+  stage_1: {gpu_hours: 6, focus: bridge + external memory gates only}
+  stage_2: {gpu_hours: 10, focus: bridge + global KV + indexer}
+  stage_3: {gpu_hours: 14, focus: selected LoRA/adapters on decoder}
+  stage_4: {gpu_hours: 12, focus: upper encoder layers}
+  stage_5: {gpu_hours: 8, focus: narrow selective inherited full-rank unfreeze (opt-in)}
+
 compute_budget:
   max_gpu_hours: 50
   gpu_class: a100_80gb

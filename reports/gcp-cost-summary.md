@@ -1,6 +1,6 @@
 # Batch 1+2 — GCP cost summary
 
-Retrieved: 2026-09-12/13 (UTC). No VM launched. No spend. Billing-confirmed: n/a.
+Retrieved: 2026-09-12/13 (UTC). 7 L4 smoke VMs launched (6 FAIL, 1 PASS); feature work CPU-only. Billing-confirmed: n/a.
 
 ## Pricing table (us-central1, Linux, full-node USD/hr)
 
@@ -42,11 +42,19 @@ download + two model loads. Hence approval is required. True billed cost will be
 reconciled into `gcp-cost-ledger.jsonl` (and issues #3/#9) after the run, labeled
 `billing-confirmed` only if the Billing API is reachable, else `estimated`.
 
-## Spend to date
+## Spend to date (updated 2026-09-13, Batch 2 close)
 
-- Estimated: **$0.00** (batches 1+2; no VM launched; pricing surveys only).
-- Billing-confirmed: **n/a**.
-- Ledger: `reports/gcp-cost-ledger.jsonl` (append-only: `batch1-pricing-survey`, `batch2-cpu-csa2-indexer-revpin`, `l4-pricing-and-quota-survey`).
+- Estimated actual: **≈$0.92** — L4 smoke attempts 1–7 in us-central1-a
+  (`g2-standard-4`, 1×L4 24GB): 0.01 + 0.01 + 0.06 + 0.16 + 0.26 + 0.12 +
+  0.30. Attempts 1–6 FAIL (fast guest-terminate ×2, missing accelerate,
+  vocab proof, torchaudio ABI ×2); attempt 7 PASS (wall 703 s, pinned
+  2B+9B revs bf16, zero-gate 0.0, Paris generation; evidence
+  `reports/gcp/ced_l4_smoke_pass.json`). Batch-2 feature work itself
+  (CSA2, indexer, mHC, stages, combined tests): **$0.00** (local CPU).
+- Billing-confirmed: **n/a** (no billing export configured).
+- Ledger: `reports/gcp-cost-ledger.jsonl`, 11 entries, append-only
+  (repaired 2026-09-13: first line held two concatenated objects; split,
+  no data changed).
 
 ## Policy reminder
 
